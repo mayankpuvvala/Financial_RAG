@@ -1,0 +1,66 @@
+# ── Secrets ───────────────────────────────────────────────
+.env
+
+# ── Large data directories (regenerate with run_ingestion.py) ──
+data/raw/
+data/qdrant/
+data/parsed/
+data/chunks/
+data/*.log
+
+# Keep manually created evaluation sets
+!data/test_sets/
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+*.egg-info/
+.eggs/
+dist/
+build/
+*.egg
+pip-wheel-metadata/
+
+# ── Virtual environments ──────────────────────────────────
+venv/
+.venv/
+env/
+ENV/
+.conda/
+
+# ── IDEs ─────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+*.suo
+.vs/
+
+# ── OS ───────────────────────────────────────────────────
+.DS_Store
+.DS_Store?
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# ── Logs ─────────────────────────────────────────────────
+*.log
+logs/
+
+# ── Jupyter ───────────────────────────────────────────────
+.ipynb_checkpoints/
+*.ipynb
+
+# ── Testing ──────────────────────────────────────────────
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# ── Model cache (downloaded by fastembed / HuggingFace) ──
+.cache/
+models/
+*.onnx
