@@ -101,9 +101,12 @@ def generate_answer(
             query_type=query_type,
         )
 
-    # Hallucination guard — if best score is very low, refuse
+    # Hallucination guard — only fire when ALL chunks score below -9.
+    # Cross-encoder rerankers trained on web search return negative scores
+    # for financial text even when the content is relevant, so 0.05 was
+    # too aggressive. -9 catches truly empty / zero-relevance retrievals.
     best_score = max(rc.score for rc in retrieved)
-    if best_score < 0.05:
+    if best_score < -9.0:
         return QueryResult(
             query=query,
             answer="The retrieved context has very low relevance to your query. "
