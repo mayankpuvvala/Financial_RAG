@@ -3,12 +3,12 @@ Synthesizer — handles multi_doc and temporal queries.
 
 Flow:
   1. Decompose query into atomic sub-questions
-  2. Retrieve + generate a sub-answer for each sub-question (in parallel)
+  2. Retrieve + generate a sub-answer for each sub-question (sequentially —
+     local Qdrant embedded mode does not support concurrent file access)
   3. Combine all sub-answers with a synthesis prompt
   4. Return a single QueryResult with merged citations
 """
 
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict
 
 from groq import Groq
@@ -36,7 +36,6 @@ Your task:
 
 
 def _answer_sub_question(sub: Dict, top_k: int) -> tuple[Dict, QueryResult]:
-    """Retrieve and answer a single sub-question. Returns (sub, result)."""
     retrieved = retrieve(
         query=sub["question"],
         tickers=[sub["ticker"]],
@@ -59,41 +58,33 @@ def synthesize(
     top_k:      int = settings.rerank_top_k,
 ) -> QueryResult:
     """
-    Full multi-document synthesis pipeline.
-    Runs sub-question retrieval in parallel threads.
+    Full multi-document synthesis pipeline — sequential execution.
+    Local Qdrant embedded mode uses SQLite which rejects concurrent openers,
+    so sub-questions run one at a time.
     """
     sub_questions = decompose_query(query, tickers, years)
     logger.info(f"Synthesizing {len(sub_questions)} sub-questions for: '{query[:60]}'")
 
     sub_results: List[tuple[Dict, QueryResult]] = []
 
-    # Parallel retrieval + generation across sub-questions
-    with ThreadPoolExecutor(max_workers=min(len(sub_questions), 4)) as pool:
-        futures = {
-            pool.submit(_answer_sub_question, sub, top_k): sub
-            for sub in sub_questions
-        }
-        for future in as_completed(futures):
-            try:
-                sub_results.append(future.result())
-            except Exception as exc:
-                logger.error(f"Sub-question failed: {exc}")
-
-    # Sort back into decomposition order
-    order_map = {sub["question"]: i for i, sub in enumerate(sub_questions)}
-    sub_results.sort(key=lambda x: order_map.get(x[0]["question"], 999))
+    for sub in sub_questions:
+        try:
+            result = _answer_sub_question(sub, top_k)
+            sub_results.append(result)
+            logger.debug(f"  ✓ {sub['ticker']} FY{sub['year']}: {sub['question'][:50]}")
+        except Exception as exc:
+            logger.error(f"  ✗ Sub-question failed ({sub['ticker']} FY{sub['year']}): {exc}")
 
     # Build the synthesis input
     combined_parts = []
-    all_citations:    List[dict] = []
-    all_chunks:       List[RetrievedChunk] = []
+    all_citations:  List[dict] = []
+    all_chunks:     List[RetrievedChunk] = []
     citation_offset = 0
 
     for sub, result in sub_results:
         if result.answer.startswith("No relevant"):
             continue
 
-        # Renumber citations so they're globally unique
         remapped_answer = result.answer
         renumbered_cits = []
         for cit in result.citations:
@@ -122,7 +113,6 @@ def synthesize(
             query_type=query_type,
         )
 
-    # Single synthesis call to combine everything
     synthesis_input = (
         f"ORIGINAL QUESTION: {query}\n\n"
         + "\n\n---\n\n".join(combined_parts)
@@ -140,11 +130,9 @@ def synthesize(
         max_tokens=2048,
     )
 
-    final_answer = synthesis_response.choices[0].message.content.strip()
-
     return QueryResult(
         query=query,
-        answer=final_answer,
+        answer=synthesis_response.choices[0].message.content.strip(),
         citations=all_citations,
         chunks_used=all_chunks,
         query_type=query_type,

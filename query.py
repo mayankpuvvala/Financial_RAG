@@ -86,7 +86,7 @@ def _print_result(result: QueryResult) -> None:
 
 if __name__ == "__main__":
     logger.remove()
-    logger.add(sys.stderr, level="INFO", colorize=True,
+    logger.add(sys.stderr, level="DEBUG", colorize=True,
                format="<green>{time:HH:mm:ss}</green> | <level>{level}</level> | {message}")
 
     if len(sys.argv) < 2:

@@ -18,7 +18,7 @@ from config import settings
 from models import QueryResult, RetrievedChunk
 
 _ENCODER     = tiktoken.get_encoding("cl100k_base")
-MAX_CTX_TOKS = 2500   # max tokens per source in the context block
+MAX_CTX_TOKS = 3000   # max tokens per source — income statements appear in first ~1500 tokens
 
 SYSTEM_PROMPT = """\
 You are a financial analyst with access to official SEC 10-K filings.

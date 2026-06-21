@@ -30,7 +30,11 @@ class ParentStore:
         for path in self._parsed_dir.glob("*.json"):
             try:
                 with open(path, encoding="utf-8") as f:
-                    doc = ParsedDocument(**json.load(f))
+                    # model_validate correctly deserialises nested Pydantic v2
+                    # models (ParsedSection → ContentBlock). The old **dict
+                    # approach leaves nested objects as plain dicts so
+                    # section_by_id() always returns None.
+                    doc = ParsedDocument.model_validate(json.load(f))
                 self._docs[doc.doc_id] = doc
             except Exception as exc:
                 logger.warning(f"ParentStore: could not load {path.name}: {exc}")
@@ -42,11 +46,33 @@ class ParentStore:
     def get_section_text(self, doc_id: str, section_id: str) -> str:
         """Return the full concatenated text of a section (the 'parent' context)."""
         self._load_all()
+
         doc = self._docs.get(doc_id)
         if not doc:
+            known = list(self._docs.keys())[:3]
+            logger.warning(
+                f"ParentStore: doc_id not found — "
+                f"looking for '{doc_id[:12]}…', "
+                f"known sample: {[k[:12] for k in known]}"
+            )
             return ""
+
         section = doc.section_by_id(section_id)
-        return section.full_text() if section else ""
+        if not section:
+            known_ids = [s.section_id for s in doc.sections]
+            logger.warning(
+                f"ParentStore: section '{section_id}' not found in "
+                f"{doc.ticker} FY{doc.fiscal_year}. "
+                f"Available: {known_ids}"
+            )
+            return ""
+
+        text = section.full_text()
+        logger.debug(
+            f"ParentStore: {doc.ticker} FY{doc.fiscal_year} / "
+            f"'{section_id}' → {len(text)} chars"
+        )
+        return text
 
     def get_doc(self, doc_id: str) -> Optional[ParsedDocument]:
         self._load_all()
