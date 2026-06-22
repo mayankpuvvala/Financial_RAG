@@ -20,7 +20,7 @@ from pydantic import BaseModel
 from config import settings, COMPANIES
 
 VALID_TICKERS = {c["ticker"] for c in COMPANIES}
-VALID_YEARS   = {2022, 2023, 2024}
+VALID_YEARS   = {2023, 2024, 2025}
 
 VALID_QUERY_TYPES = {"single_doc", "multi_doc", "temporal", "out_of_scope"}
 
@@ -31,7 +31,7 @@ Available documents: 10-K annual filings for these companies:
   Technology    : AAPL, MSFT, GOOGL, AMZN
   Banking       : JPM, WFC, BAC, GS
   Asset Mgmt    : BLK, STT, TROW, IVZ
-Fiscal years covered: 2022, 2023, 2024
+Fiscal years covered: 2023, 2024, 2025
 
 Classify the user query into exactly one type:
   single_doc   — asks about ONE company in ONE specific year
