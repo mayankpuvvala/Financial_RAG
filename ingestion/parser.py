@@ -71,6 +71,38 @@ SECTION_PATTERNS: List[Tuple[str, str, str]] = [
 
 # Expected ordering of section_ids — used to discard out-of-order detections
 # (cross-references near the end of filings that fool "keep last" strategy).
+# Anchored patterns for the bank-style recovery pass.
+# These are stricter than SECTION_PATTERNS: the line must START and END with
+# the section title so that cross-references like "Consolidated balance sheets
+# analysis" or "Impact of derivatives on the Consolidated statements of income"
+# don't produce false matches.
+_FS_RECOVERY_PATTERNS: List[Tuple[str, str, str]] = [
+    # Standard naming (JPM, GS, most companies)
+    (r"^consolidated\s+statements?\s+of\s+(income|earnings)\s*$",
+        "fs_income_stmt",   "Consolidated Statements of Income"),
+    (r"^consolidated\s+(income|earnings)\s+statements?\s*$",
+        "fs_income_stmt",   "Consolidated Statements of Income"),
+    (r"^consolidated\s+balance\s+sheets?\s*$",
+        "fs_balance_sheet", "Consolidated Balance Sheets"),
+    (r"^consolidated\s+statements?\s+of\s+financial\s+(condition|position)\s*$",
+        "fs_balance_sheet", "Consolidated Statements of Financial Condition"),
+    (r"^consolidated\s+statements?\s+of\s+cash\s+flows?\s*$",
+        "fs_cash_flow",     "Consolidated Statements of Cash Flows"),
+    (r"^notes?\s+to\s+(consolidated\s+)?financial\s+statements?\s*$",
+        "fs_notes",         "Notes to Financial Statements"),
+    (r"^consolidated\s+statements?\s+of\s+(stockholders|shareholders|changes\s+in\s+equity)\s*$",
+        "fs_equity",        "Consolidated Statements of Equity"),
+    # BAC / WFC variants — all-caps or abbreviated headers
+    (r"^consolidated\s+statement\s+of\s+income\s*$",
+        "fs_income_stmt",   "Consolidated Statement of Income"),
+    (r"^consolidated\s+balance\s+sheet\s*$",
+        "fs_balance_sheet", "Consolidated Balance Sheet"),
+    (r"^consolidated\s+statement\s+of\s+cash\s+flows?\s*$",
+        "fs_cash_flow",     "Consolidated Statement of Cash Flows"),
+    (r"^financial\s+statements?\s*$",
+        "fs_income_stmt",   "Financial Statements"),
+]
+
 _SECTION_PRIORITY: Dict[str, int] = {
     "item_1_business":     10,  "item_1a_risk_factors": 15,
     "item_1b_staff":       16,  "item_2_properties":    20,
@@ -232,6 +264,55 @@ def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
         if priority > max_priority:
             validated.append(entry)
             max_priority = priority
+
+    # --- Recovery pass for bank-style filings --------------------------------
+    # Banks (JPM, GS, BAC, WFC) do not place audited financial statements
+    # inline within Item 8.  Instead they appear either:
+    #   (a) after Item 15 — the monotonic filter drops them (priority 81 < 150)
+    #   (b) inside a large item_* section such as item_governance
+    #
+    # Strategy: scan within every section that is at least 1,000 lines long
+    # for anchored fs_* headers.  The anchored patterns in _FS_RECOVERY_PATTERNS
+    # require the line to start AND end with the section title, which eliminates
+    # cross-references like "Consolidated balance sheets analysis" (fails $ anchor)
+    # or "Impact of derivatives on the Consolidated statements of income" (fails ^).
+    already_found: set = {e[1] for e in validated}
+    missing_fs = [
+        (p, sid, t) for p, sid, t in _FS_RECOVERY_PATTERNS
+        if sid not in already_found
+    ]
+
+    if missing_fs:
+        recovered: List[Tuple[int, str, str]] = []
+        found_fs: set = set()
+
+        # Build (start, end) pairs for each validated section
+        section_ranges = [
+            (validated[i][0],
+             validated[i + 1][0] if i + 1 < len(validated) else skip_end)
+            for i in range(len(validated))
+        ]
+
+        for start_ln, end_ln in section_ranges:
+            if end_ln - start_ln < 1_000:
+                continue
+            for j in range(start_ln, end_ln):
+                stripped = lines[j].strip()
+                if not stripped or len(stripped) > 120:
+                    continue
+                for pattern, section_id, title in missing_fs:
+                    if section_id in found_fs:
+                        continue
+                    if re.search(pattern, stripped.lower()):
+                        recovered.append((j, section_id, title))
+                        found_fs.add(section_id)
+                        break
+                if len(found_fs) == len(missing_fs):
+                    break
+
+        if recovered:
+            validated.extend(recovered)
+            validated.sort(key=lambda x: x[0])
 
     return validated
 
