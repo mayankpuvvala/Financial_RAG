@@ -1,0 +1,9 @@
+{
+  "name": "Financial RAG",
+  "image": "mcr.microsoft.com/devcontainers/python:3.10",
+  "postCreateCommand": "pip install -r requirements.txt",
+  "forwardPorts": [8000],
+  "portsAttributes": {
+    "8000": { "label": "FastAPI", "onAutoForward": "openBrowser" }
+  }
+}

@@ -150,11 +150,22 @@ def _chunks_from_block(
     )
 
     if block.block_type == "table":
-        sub_chunks = _split_table(block.text, max_tokens)
+        # Prepend a context header so table chunks are discoverable by both
+        # BM25 and dense search.  Without this, XBRL tables start with
+        # "| 0 | 1 | 2 | ..." (numeric column indices) which dominates
+        # tokenisation and makes the chunk invisible to financial queries.
+        context_header = (
+            f"{doc.company} ({doc.ticker}) FY{doc.fiscal_year} — "
+            f"{section.title}\n"
+        )
+        header_toks  = _count_tokens(context_header)
+        table_budget = max(50, max_tokens - header_toks)
+        sub_chunks   = _split_table(block.text, table_budget)
         for sub in sub_chunks:
+            enriched = context_header + sub
             yield Chunk(
                 **base_meta,
-                text        = sub,
+                text        = enriched,
                 token_count = _count_tokens(sub),
                 position    = position,
             )

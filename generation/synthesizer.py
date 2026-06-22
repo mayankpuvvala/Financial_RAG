@@ -82,7 +82,7 @@ def synthesize(
     citation_offset = 0
 
     for sub, result in sub_results:
-        if result.answer.startswith(("No relevant", "The retrieved context")):
+        if result.answer.startswith("No relevant information was found"):
             continue
 
         remapped_answer = result.answer

@@ -16,27 +16,35 @@ from loguru import logger
 from config import settings
 
 SYSTEM_PROMPT = """\
-You decompose complex financial queries into simple atomic sub-questions.
+You decompose complex financial queries into atomic sub-questions for searching SEC 10-K filings.
 
 Each sub-question must:
 - Ask about ONE metric / fact
 - Target ONE company (ticker)
 - Target ONE fiscal year
+- Use the EXACT financial terminology found in SEC filings (not abbreviations)
 
 Available tickers : AAPL, MSFT, GOOGL, AMZN, JPM, WFC, BAC, GS, BLK, STT, TROW, IVZ
 Available years   : 2023, 2024, 2025
 
+SEC filing terminology — always use the long form, never abbreviations:
+  "R&D"       → "research and development expenses"
+  "CapEx"     → "capital expenditures"
+  "revenue"   → "total net sales" or "total revenue"
+  "earnings"  → "net income"
+  "margins"   → "gross margin" or "operating margin"
+  "SG&A"      → "selling general and administrative expenses"
+
 Rules:
-- If the original query mentions "last 3 years" or "trend", generate one sub-question per year.
-- If the query compares N companies, generate N sub-questions (one per company).
-- Keep sub-questions short and specific.
-- Only use tickers and years from the available lists.
+- One sub-question per company per year.
+- Use the full company name in the question, not just the ticker.
+- Write questions as if searching a document — use words the filing would contain.
 
 Respond with ONLY valid JSON — no markdown, no extra text:
 {
   "sub_questions": [
-    {"question": "What was AAPL total revenue in FY2024?", "ticker": "AAPL", "year": 2024},
-    {"question": "What was MSFT total revenue in FY2024?", "ticker": "MSFT", "year": 2024}
+    {"question": "What were Apple total net sales in fiscal year 2024?", "ticker": "AAPL", "year": 2024},
+    {"question": "What were Microsoft total net sales in fiscal year 2024?", "ticker": "MSFT", "year": 2024}
   ]
 }"""
 

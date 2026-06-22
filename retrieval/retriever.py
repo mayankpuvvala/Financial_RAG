@@ -80,6 +80,12 @@ def retrieve(
     dense, sparse_idx, sparse_val = encode_query(query)
 
     # --- 2. Hybrid search across all target collections ---
+    # Run two passes per collection:
+    #   a) Main search across all chunk types (text + table + footnote)
+    #   b) Table-only search — XBRL-formatted tables embed poorly and get
+    #      pushed out of the top-20 by text chunks.  Searching tables
+    #      separately guarantees financial statement tables (income statement,
+    #      R&D table, balance sheet) are in the candidate pool.
     raw_results = []
     for col in collections:
         hits = hybrid_search(
@@ -90,6 +96,16 @@ def retrieve(
             top_k                = settings.retrieval_top_k,
         )
         raw_results.extend(hits)
+
+        table_hits = hybrid_search(
+            collection_name      = col,
+            query_dense          = dense,
+            query_sparse_indices = sparse_idx,
+            query_sparse_values  = sparse_val,
+            top_k                = 5,
+            chunk_type_filter    = "table",
+        )
+        raw_results.extend(table_hits)
 
     if not raw_results:
         logger.warning("Hybrid search returned no results")
@@ -106,7 +122,28 @@ def retrieve(
     candidates = unique[: settings.retrieval_top_k]
 
     # --- 4. Rerank ---
-    reranked = rerank(query, candidates, top_k=top_k)
+    # Ask for more than top_k so section-diversity filtering has room to work
+    reranked = rerank(query, candidates, top_k=min(top_k * 2, len(candidates)))
+
+    # --- 4b. Section + type diversity.
+    #
+    # Allow 1 TEXT chunk and 1 TABLE chunk per section.  This guarantees
+    # that the table containing the actual dollar figure (e.g. the R&D
+    # expense line in MD&A) always gets a context slot alongside the prose
+    # explanation, even when text chunks outscore table chunks in retrieval.
+    from collections import defaultdict
+    type_section_counts: dict = defaultdict(int)
+    diverse: List[dict] = []
+    for r in reranked:
+        section    = r["payload"].get("section_name", "")
+        chunk_type = r["payload"].get("chunk_type", "text")
+        key = (section, chunk_type)
+        if type_section_counts[key] < 1:
+            diverse.append(r)
+            type_section_counts[key] += 1
+        if len(diverse) >= top_k:
+            break
+    reranked = diverse
 
     # --- 5. Build RetrievedChunk objects ---
     retrieved: List[RetrievedChunk] = []

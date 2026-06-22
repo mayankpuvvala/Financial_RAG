@@ -11,35 +11,80 @@ from loguru import logger
 from models import ContentBlock, ParsedDocument, ParsedSection
 
 # ---------------------------------------------------------------------------
-# SEC 10-K section patterns — ordered most-specific first.
-# Each entry: (regex, section_id, human title)
+# Section patterns — two levels deep:
+#
+#  Level 1  "Item N" headers — split the 10-K into major parts
+#  Level 2  Financial statement headers — break Item 8 into individual
+#           statements so citations say "Consolidated Statements of
+#           Operations" instead of the 243k-char "Item 8" blob
+#
+# Order matters: more-specific patterns must come first.
 # ---------------------------------------------------------------------------
 SECTION_PATTERNS: List[Tuple[str, str, str]] = [
-    # Standard "Item N[A]" patterns
-    (r"item\s*1a[\.\s:]*risk\s*factor",         "item_1a_risk_factors", "Item 1A: Risk Factors"),
-    (r"item\s*1b[\.\s:]*unresolved",             "item_1b_staff",        "Item 1B: Unresolved Staff Comments"),
-    (r"item\s*1[\.\s:]*business",                "item_1_business",      "Item 1: Business"),
-    (r"item\s*2[\.\s:]*propert",                 "item_2_properties",    "Item 2: Properties"),
-    (r"item\s*3[\.\s:]*legal",                   "item_3_legal",         "Item 3: Legal Proceedings"),
-    (r"item\s*4[\.\s:]*mine",                    "item_4_mine",          "Item 4: Mine Safety"),
-    (r"item\s*5[\.\s:]*market",                  "item_5_market",        "Item 5: Market for Equity"),
-    (r"item\s*6[\.\s:]*selected",                "item_6_selected",      "Item 6: Selected Financial Data"),
-    (r"item\s*7a[\.\s:]*quantitative",           "item_7a_market_risk",  "Item 7A: Quantitative Disclosures"),
-    (r"item\s*7[\.\s:]*management",              "item_7_mda",           "Item 7: MD&A"),
-    (r"item\s*8[\.\s:]*financial\s*statement",   "item_8_financials",    "Item 8: Financial Statements"),
-    (r"item\s*9a[\.\s:]*controls",               "item_9a_controls",     "Item 9A: Controls and Procedures"),
-    (r"item\s*9b[\.\s:]*other",                  "item_9b_other",        "Item 9B: Other Information"),
-    (r"item\s*9[\.\s:]*change",                  "item_9_accountants",   "Item 9: Disagreements with Accountants"),
-    (r"item\s*1[0-4][\.\s:]",                    "item_governance",      "Items 10-14: Corporate Governance"),
-    (r"item\s*15[\.\s:]*exhibit",                "item_15_exhibits",     "Item 15: Exhibits"),
-    # Fallback patterns — match standalone section titles without "Item N"
-    # (used by Amazon, Google and other companies that omit Item numbers in headers)
-    (r"^risk\s+factors$",                        "item_1a_risk_factors", "Item 1A: Risk Factors"),
-    (r"management.s\s+discussion\s+and\s+analysis", "item_7_mda",        "Item 7: MD&A"),
-    (r"^quantitative\s+and\s+qualitative",       "item_7a_market_risk",  "Item 7A: Quantitative Disclosures"),
-    (r"financial\s+statements\s+and\s+supplementary", "item_8_financials","Item 8: Financial Statements"),
-    (r"^controls\s+and\s+procedures$",           "item_9a_controls",     "Item 9A: Controls and Procedures"),
+
+    # ── Item N patterns (Level 1) ──────────────────────────────────────────
+    (r"item\s*1a[\.\s:]*risk\s*factor",          "item_1a_risk_factors", "Item 1A: Risk Factors"),
+    (r"item\s*1b[\.\s:]*unresolved",              "item_1b_staff",        "Item 1B: Unresolved Staff Comments"),
+    (r"item\s*1[\.\s:]*business",                 "item_1_business",      "Item 1: Business"),
+    (r"item\s*2[\.\s:]*propert",                  "item_2_properties",    "Item 2: Properties"),
+    (r"item\s*3[\.\s:]*legal",                    "item_3_legal",         "Item 3: Legal Proceedings"),
+    (r"item\s*4[\.\s:]*mine",                     "item_4_mine",          "Item 4: Mine Safety"),
+    (r"item\s*5[\.\s:]*market",                   "item_5_market",        "Item 5: Market for Equity"),
+    (r"item\s*6[\.\s:]*selected",                 "item_6_selected",      "Item 6: Selected Financial Data"),
+    (r"item\s*7a[\.\s:]*quantitative",            "item_7a_market_risk",  "Item 7A: Quantitative Disclosures"),
+    (r"item\s*7[\.\s:]*management",               "item_7_mda",           "Item 7: MD&A"),
+    (r"item\s*8[\.\s:]*financial",                "item_8_financials",    "Item 8: Financial Statements"),
+    (r"item\s*9a[\.\s:]*controls",                "item_9a_controls",     "Item 9A: Controls and Procedures"),
+    (r"item\s*9b[\.\s:]*other",                   "item_9b_other",        "Item 9B: Other Information"),
+    (r"item\s*9[\.\s:]*change",                   "item_9_accountants",   "Item 9: Disagreements with Accountants"),
+    (r"item\s*1[0-4][\.\s:]",                     "item_governance",      "Items 10-14: Corporate Governance"),
+    (r"item\s*15[\.\s:]*exhibit",                 "item_15_exhibits",     "Item 15: Exhibits"),
+
+    # ── Financial statement sub-sections (Level 2, inside Item 8) ─────────
+    # These give precise citations ("Consolidated Statements of Operations")
+    # instead of the giant "Item 8" blob.  Patterns cover naming variants
+    # across tech, banking, and asset-management 10-Ks.
+    (r"consolidated\s+statements?\s+of\s+operations",
+        "fs_income_stmt",   "Consolidated Statements of Operations"),
+    (r"consolidated\s+statements?\s+of\s+(income|earnings)",
+        "fs_income_stmt",   "Consolidated Statements of Income"),
+    (r"consolidated\s+(income|earnings)\s+statements?",
+        "fs_income_stmt",   "Consolidated Statements of Income"),
+    (r"consolidated\s+balance\s+sheets?",
+        "fs_balance_sheet", "Consolidated Balance Sheets"),
+    (r"consolidated\s+statements?\s+of\s+financial\s+(condition|position)",
+        "fs_balance_sheet", "Consolidated Statements of Financial Condition"),
+    (r"consolidated\s+statements?\s+of\s+cash\s+flows?",
+        "fs_cash_flow",     "Consolidated Statements of Cash Flows"),
+    (r"consolidated\s+statements?\s+of\s+(stockholders|shareholders|changes\s+in\s+equity)",
+        "fs_equity",        "Consolidated Statements of Equity"),
+    (r"notes?\s+to\s+(consolidated\s+)?financial\s+statements?",
+        "fs_notes",         "Notes to Financial Statements"),
+
+    # ── Standalone title fallbacks (companies that omit "Item N") ──────────
+    (r"^risk\s+factors$",                           "item_1a_risk_factors", "Item 1A: Risk Factors"),
+    (r"management.s\s+discussion\s+and\s+analysis", "item_7_mda",           "Item 7: MD&A"),
+    (r"^quantitative\s+and\s+qualitative",          "item_7a_market_risk",  "Item 7A: Quantitative Disclosures"),
+    (r"financial\s+statements\s+and\s+supplementary","item_8_financials",   "Item 8: Financial Statements"),
+    (r"^controls\s+and\s+procedures$",              "item_9a_controls",     "Item 9A: Controls and Procedures"),
 ]
+
+# Expected ordering of section_ids — used to discard out-of-order detections
+# (cross-references near the end of filings that fool "keep last" strategy).
+_SECTION_PRIORITY: Dict[str, int] = {
+    "item_1_business":     10,  "item_1a_risk_factors": 15,
+    "item_1b_staff":       16,  "item_2_properties":    20,
+    "item_3_legal":        30,  "item_4_mine":          40,
+    "item_5_market":       50,  "item_6_selected":      60,
+    "item_7_mda":          70,  "item_7a_market_risk":  75,
+    "item_8_financials":   80,
+    "fs_income_stmt":      81,  "fs_balance_sheet":     82,
+    "fs_cash_flow":        83,  "fs_equity":            84,
+    "fs_notes":            85,
+    "item_9_accountants":  90,  "item_9a_controls":     91,
+    "item_9b_other":       92,  "item_governance":      100,
+    "item_15_exhibits":    150,
+}
 
 
 # ---------------------------------------------------------------------------
@@ -47,12 +92,10 @@ SECTION_PATTERNS: List[Tuple[str, str, str]] = [
 # ---------------------------------------------------------------------------
 
 def _strip_ixbrl(html: str) -> str:
-    """Remove iXBRL / XBRL namespace tags, keeping their text content."""
-    # Strip XML declaration that triggers BeautifulSoup parser warnings
     html = re.sub(r"^\s*<\?xml[^?]*\?>", "", html, count=1, flags=re.IGNORECASE)
-    html = re.sub(r"<(/?)ix:[^>]*>",     "", html, flags=re.IGNORECASE)
-    html = re.sub(r"<(/?)xbrli:[^>]*>",  "", html, flags=re.IGNORECASE)
-    html = re.sub(r"<(/?)xbrldi:[^>]*>", "", html, flags=re.IGNORECASE)
+    html = re.sub(r"<(/?)ix:[^>]*>",      "", html, flags=re.IGNORECASE)
+    html = re.sub(r"<(/?)xbrli:[^>]*>",   "", html, flags=re.IGNORECASE)
+    html = re.sub(r"<(/?)xbrldi:[^>]*>",  "", html, flags=re.IGNORECASE)
     return html
 
 
@@ -61,47 +104,38 @@ def _strip_ixbrl(html: str) -> str:
 # ---------------------------------------------------------------------------
 
 def _is_data_table(tag: Tag) -> bool:
-    """Return True if this <table> looks like a financial data table."""
-    # Only look at direct-child rows to avoid counting nested-table rows
     rows = tag.find_all("tr", recursive=True)
     if len(rows) < 2:
         return False
-    first_row_cells = rows[0].find_all(["td", "th"], recursive=False)
-    if len(first_row_cells) < 2:
-        # Try one level deeper (some tables wrap cells in a tbody)
-        first_row_cells = rows[0].find_all(["td", "th"])
+    first_row_cells = rows[0].find_all(["td", "th"])
     if len(first_row_cells) < 2:
         return False
-    text = tag.get_text(strip=True)
-    return len(text) > 60
+    return len(tag.get_text(strip=True)) > 60
 
 
 def _table_to_markdown(df: pd.DataFrame) -> str:
-    df = df.fillna("").astype(str)
-    headers    = list(df.columns)
-    rows       = df.values.tolist()
-    header_ln  = "| " + " | ".join(str(h) for h in headers) + " |"
-    sep_ln     = "| " + " | ".join("---" for _ in headers) + " |"
-    data_lns   = ["| " + " | ".join(str(c) for c in row) + " |" for row in rows]
-    return "\n".join([header_ln, sep_ln] + data_lns)
+    df       = df.fillna("").astype(str)
+    headers  = list(df.columns)
+    rows     = df.values.tolist()
+    # Pandas names XBRL columns as integers (0, 1, 2, ...) when no <th>
+    # headers are present.  Replace them with empty strings so the
+    # markdown doesn't start with "| 0 | 1 | 2 | ..." which dominates
+    # BM25 tokens and makes table chunks impossible to retrieve.
+    clean_headers = ["" if str(h).lstrip("-").isdigit() else str(h) for h in headers]
+
+    h_line   = "| " + " | ".join(clean_headers) + " |"
+    sep_line = "| " + " | ".join("---" for _ in clean_headers)  + " |"
+    d_lines  = ["| " + " | ".join(str(c) for c in row) + " |" for row in rows]
+    return "\n".join([h_line, sep_line] + d_lines)
 
 
 def _extract_tables(soup: BeautifulSoup) -> Dict[str, Tuple[str, List]]:
-    """
-    Find all data tables, replace each with a placeholder, return the mapping.
-
-    We process only tables that are still attached to the document
-    (tag.parent is not None) to avoid re-processing nested tables whose
-    parent was already replaced.
-    """
     tables: Dict[str, Tuple[str, List]] = {}
     idx = 0
 
     for tag in soup.find_all("table"):
-        # Skip if this tag was removed when its parent was replaced
         if tag.parent is None:
             continue
-
         if not _is_data_table(tag):
             tag.decompose()
             continue
@@ -119,14 +153,12 @@ def _extract_tables(soup: BeautifulSoup) -> Dict[str, Tuple[str, List]]:
                 tables[placeholder] = (markdown, raw)
                 tag.replace_with(soup.new_string(f"\n{placeholder}\n"))
             else:
-                logger.debug(f"Table {idx}: empty DataFrame, skipping")
                 tag.decompose()
         except ValueError as exc:
-            # pd.read_html raises ValueError when it finds no valid tables
             logger.debug(f"Table {idx}: pd.read_html ValueError — {exc}")
             tag.decompose()
         except Exception as exc:
-            logger.debug(f"Table {idx}: unexpected error — {type(exc).__name__}: {exc}")
+            logger.debug(f"Table {idx}: {type(exc).__name__}: {exc}")
             tag.decompose()
 
     return tables
@@ -146,29 +178,62 @@ def _match_section(text: str) -> Optional[Tuple[str, str]]:
 
 def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
     """
-    Scan document lines for SEC section headers.
+    Hybrid boundary detection — different strategies for Item-level vs
+    financial-statement sub-sections.
 
-    Strategy: for each section_id keep the LAST occurrence.
-    "Last" reliably lands on the actual content header rather than the
-    Table-of-Contents entry (TOC comes first, content comes later).
-    No skip-zone — relying on "last wins" is sufficient and avoids
-    filtering out filings (e.g. Amazon, Google) where the content
-    header appears near the beginning.
+    item_* sections  → FIRST occurrence past the 15 % TOC zone.
+      Rationale: Item-level headers sometimes appear as cross-references
+      deep inside financial footnotes (e.g. "see Item 7A"), causing
+      "keep last" to misplace them and balloon section sizes.
+
+    fs_* sub-sections → LAST occurrence inside the valid window.
+      Rationale: fs_* headers ("Consolidated Statements of Operations")
+      appear first in the Item 8 mini-table-of-contents, then again as
+      the actual statement header. "Keep first" would pick the TOC
+      listing (tiny content); "keep last" picks the actual statement.
+
+    Pass 2 enforces monotonic Item ordering so misdetections
+    (cross-refs, TOC stragglers) are dropped.
     """
-    last_seen: Dict[str, Tuple[int, str, str]] = {}
+    from collections import defaultdict
+
+    total      = len(lines)
+    skip_start = int(total * 0.15)
+    skip_end   = int(total * 0.97)
+
+    all_occurrences: Dict[str, List[Tuple[int, str, str]]] = defaultdict(list)
 
     for i, line in enumerate(lines):
+        if i < skip_start or i > skip_end:
+            continue
         stripped = line.strip()
         if not stripped or len(stripped) > 250:
             continue
         match = _match_section(stripped)
         if match:
             section_id, title = match
-            last_seen[section_id] = (i, section_id, title)
+            all_occurrences[section_id].append((i, section_id, title))
 
-    boundaries = list(last_seen.values())
-    boundaries.sort(key=lambda x: x[0])
-    return boundaries
+    selected: Dict[str, Tuple[int, str, str]] = {}
+    for section_id, occurrences in all_occurrences.items():
+        if section_id.startswith("fs_"):
+            selected[section_id] = occurrences[-1]   # last = actual statement
+        else:
+            selected[section_id] = occurrences[0]    # first = content header
+
+    candidates = sorted(selected.values(), key=lambda x: x[0])
+
+    # Monotonic priority filter — drop out-of-order misdetections
+    validated: List[Tuple[int, str, str]] = []
+    max_priority = -1
+
+    for entry in candidates:
+        priority = _SECTION_PRIORITY.get(entry[1], 500)
+        if priority > max_priority:
+            validated.append(entry)
+            max_priority = priority
+
+    return validated
 
 
 # ---------------------------------------------------------------------------
@@ -203,9 +268,7 @@ def _build_section(
             position += 1
             continue
 
-        # Split text into paragraphs on blank lines
-        paragraphs = re.split(r"\n{2,}", part)
-        for para in paragraphs:
+        for para in re.split(r"\n{2,}", part):
             para = re.sub(r"[ \t]{2,}", " ", para).replace("\n", " ").strip()
             if len(para) < 30:
                 continue
@@ -226,7 +289,7 @@ def _build_section(
 
 
 # ---------------------------------------------------------------------------
-# Public entry point
+# Public entry points
 # ---------------------------------------------------------------------------
 
 def parse_filing(
@@ -263,7 +326,7 @@ def parse_filing(
     sections: List[ParsedSection] = []
 
     if not boundaries:
-        logger.warning(f"  No section headers found for {ticker} FY{fiscal_year}; storing as full document")
+        logger.warning(f"  No sections found for {ticker} FY{fiscal_year}; using full document")
         sections.append(_build_section("full_document", "Full Document", raw_text, tables, 0))
     else:
         for i, (start_line, section_id, title) in enumerate(boundaries):
@@ -306,15 +369,13 @@ def parse_all_filings(
 
         try:
             doc = parse_filing(
-                file_path=Path(record["file_path"]),
-                company=record["company"],
-                ticker=record["ticker"],
-                fiscal_year=record["fiscal_year"],
-                accession_number=record["accession_number"],
-                filing_date=record.get("filing_date"),
+                file_path        = Path(record["file_path"]),
+                company          = record["company"],
+                ticker           = record["ticker"],
+                fiscal_year      = record["fiscal_year"],
+                accession_number = record["accession_number"],
+                filing_date      = record.get("filing_date"),
             )
-            # Always write JSON as UTF-8 — Windows default (cp1252) breaks
-            # on Unicode characters present in SEC filings (bullet points, etc.)
             with open(out_file, "w", encoding="utf-8") as f:
                 f.write(doc.model_dump_json(indent=2))
             documents.append(doc)
