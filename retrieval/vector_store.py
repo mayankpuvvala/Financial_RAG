@@ -98,9 +98,8 @@ def list_collections() -> List[str]:
 def get_collection_stats(name: str) -> Dict:
     info = get_client().get_collection(name)
     return {
-        "name":          name,
-        "points_count":  info.points_count,
-        "vectors_count": info.vectors_count,
+        "name":         name,
+        "points_count": info.points_count,
     }
 
 
