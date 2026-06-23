@@ -234,6 +234,10 @@ def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
     skip_end   = int(total * 0.97)
 
     all_occurrences: Dict[str, List[Tuple[int, str, str]]] = defaultdict(list)
+    # Sentinels injected by _annotate_fs_header_tables take absolute priority —
+    # they point directly at the table that is the section header, bypassing the
+    # last/first occurrence heuristics that work on plain text.
+    sentinel_hits: Dict[str, Tuple[int, str, str]] = {}
 
     for i, line in enumerate(lines):
         if i < skip_start or i > skip_end:
@@ -241,6 +245,15 @@ def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
         stripped = line.strip()
         if not stripped or len(stripped) > 250:
             continue
+
+        if stripped.startswith(_FS_SENTINEL_PREFIX):
+            title = stripped[len(_FS_SENTINEL_PREFIX):]
+            for _, sid, t in _FS_RECOVERY_PATTERNS:
+                if t.lower() == title.lower():
+                    sentinel_hits[sid] = (i, sid, t)
+                    break
+            continue
+
         match = _match_section(stripped)
         if match:
             section_id, title = match
@@ -248,10 +261,17 @@ def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
 
     selected: Dict[str, Tuple[int, str, str]] = {}
     for section_id, occurrences in all_occurrences.items():
-        if section_id.startswith("fs_"):
+        if section_id in sentinel_hits:
+            selected[section_id] = sentinel_hits[section_id]   # sentinel wins
+        elif section_id.startswith("fs_"):
             selected[section_id] = occurrences[-1]   # last = actual statement
         else:
             selected[section_id] = occurrences[0]    # first = content header
+
+    # Any sentinel sections not found via text patterns also get included
+    for sid, entry in sentinel_hits.items():
+        if sid not in selected:
+            selected[sid] = entry
 
     candidates = sorted(selected.values(), key=lambda x: x[0])
 
@@ -370,6 +390,48 @@ def _build_section(
 
 
 # ---------------------------------------------------------------------------
+# Pre-extraction annotation
+# ---------------------------------------------------------------------------
+
+# Sentinel prefix written into the soup before table extraction so that
+# _find_section_boundaries can pick up the section_id from plain text.
+_FS_SENTINEL_PREFIX = "FS_SECTION_HEADER:"
+
+
+def _annotate_fs_header_tables(soup: BeautifulSoup) -> None:
+    """
+    Scan every <table> for a cell (within the first 5 rows) whose text
+    matches an fs_* header pattern. When found, insert a sentinel text node
+    immediately before the <table> so the header survives as a plain-text
+    line after _extract_tables replaces the table with a placeholder.
+
+    Targets issuers like BAC/WFC where section headers such as
+    "Consolidated Statement of Income" live inside <td> cells — sometimes
+    after leading empty spacer rows — and are otherwise lost when the table
+    is replaced by a <<<TABLE_N>>> placeholder.
+    """
+    for table_tag in soup.find_all("table"):
+        rows = table_tag.find_all("tr", recursive=True)
+        matched = False
+        for row in rows[:5]:                              # scan first 5 rows
+            for cell in row.find_all(["td", "th"]):
+                cell_text = cell.get_text(separator=" ", strip=True).lower()
+                if not cell_text or len(cell_text) > 120:
+                    continue
+                for pattern, section_id, title in _FS_RECOVERY_PATTERNS:
+                    if re.search(pattern, cell_text):
+                        sentinel = soup.new_string(f"\n{_FS_SENTINEL_PREFIX}{title}\n")
+                        table_tag.insert_before(sentinel)
+                        logger.debug(f"  Pre-annotated table: '{title}' ({cell_text[:50]})")
+                        matched = True
+                        break
+                if matched:
+                    break
+            if matched:
+                break
+
+
+# ---------------------------------------------------------------------------
 # Public entry points
 # ---------------------------------------------------------------------------
 
@@ -391,6 +453,16 @@ def parse_filing(
 
     for tag in soup(["script", "style", "meta", "link", "head", "noscript"]):
         tag.decompose()
+
+    # Pre-annotate financial statement header tables before extraction.
+    # Some issuers (BAC, WFC) put headers like "Consolidated Statement of
+    # Income" inside <td> cells of the statement tables rather than as
+    # stand-alone <div> or <p> elements.  After _extract_tables replaces those
+    # tables with <<<TABLE_N>>> placeholders, the text disappears from the
+    # plain-text stream and boundary detection misses it.  By inserting a
+    # sentinel text node BEFORE the table here, the marker survives into
+    # get_text() output so _find_section_boundaries can detect it normally.
+    _annotate_fs_header_tables(soup)
 
     tables   = _extract_tables(soup)
     raw_text = soup.get_text(separator="\n")
