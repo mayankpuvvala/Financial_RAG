@@ -52,7 +52,7 @@ logs/
 
 # ── Jupyter ───────────────────────────────────────────────
 .ipynb_checkpoints/
-*.ipynb
+# *.ipynb
 
 # ── Testing ──────────────────────────────────────────────
 .pytest_cache/

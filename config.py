@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     )
 
     # API keys
-    grok_api: str = Field(validation_alias="GROK_API")
+    groq_api: str = Field(validation_alias="GROK_API")
     edgar_email: str = Field(validation_alias="EDGAR_EMAIL")
 
     # Paths
@@ -52,15 +52,15 @@ class Settings(BaseSettings):
     chunk_overlap_sentences: int = 2
 
     # Embeddings  (fastembed / ONNX — no PyTorch required)
-    embedding_model:     str = "BAAI/bge-small-en-v1.5" #change to a larger model if you have a GPU with enough VRAM
-    embedding_dim:       int = 384
+    embedding_model:     str = "BAAI/bge-base-en-v1.5" #change to a larger model if you have a GPU with enough VRAM
+    embedding_dim:       int = 768
     embedding_batch_size: int = 32
     sparse_model:        str = "Qdrant/bm25"
 
     # Retrieval
-    retrieval_top_k: int = 20
-    rerank_top_k:    int = 5
-    reranker_model:  str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    retrieval_top_k: int = 10
+    rerank_top_k:    int = 3
+    reranker_model:  str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
 
     # Groq models
     generation_model: str = "llama-3.3-70b-versatile"

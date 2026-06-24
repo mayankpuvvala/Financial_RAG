@@ -39,7 +39,7 @@ check("FusionQuery / Prefetch / Fusion",
 
 print("\n=== 3. Config / .env ===")
 check("config loads",        lambda: __import__("config").settings.filing_type)
-check("grok_api present",    lambda: bool(__import__("config").settings.grok_api))
+check("groq_api present",    lambda: bool(__import__("config").settings.groq_api))
 check("edgar_email present", lambda: __import__("config").settings.edgar_email)
 
 print("\n=== 4. NLTK tokenizer ===")

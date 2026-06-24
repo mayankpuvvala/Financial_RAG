@@ -60,7 +60,7 @@ def decompose_query(
     Falls back to a single entry if decomposition fails.
     """
     try:
-        client   = Groq(api_key=settings.grok_api)
+        client   = Groq(api_key=settings.groq_api)
         response = client.chat.completions.create(
             model=settings.routing_model,
             messages=[

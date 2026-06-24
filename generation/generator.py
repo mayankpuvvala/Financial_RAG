@@ -119,7 +119,7 @@ def _build_context(retrieved: List[RetrievedChunk]) -> tuple[str, List[dict]]:
 
 @lru_cache(maxsize=1)
 def _get_client() -> Groq:
-    return Groq(api_key=settings.grok_api)
+    return Groq(api_key=settings.groq_api)
 
 
 def generate_answer(

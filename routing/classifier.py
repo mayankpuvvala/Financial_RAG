@@ -62,7 +62,7 @@ class ClassifiedQuery(BaseModel):
 
 @lru_cache(maxsize=1)
 def _get_client() -> Groq:
-    return Groq(api_key=settings.grok_api)
+    return Groq(api_key=settings.groq_api)
 
 
 def classify_query(query: str) -> ClassifiedQuery:

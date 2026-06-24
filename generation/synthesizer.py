@@ -3,12 +3,15 @@ Synthesizer — handles multi_doc and temporal queries.
 
 Flow:
   1. Decompose query into atomic sub-questions
-  2. Retrieve + generate a sub-answer for each sub-question (sequentially —
-     local Qdrant embedded mode does not support concurrent file access)
-  3. Combine all sub-answers with a synthesis prompt
-  4. Return a single QueryResult with merged citations
+  2. Retrieve for every sub-question sequentially (Qdrant SQLite lock
+     prevents concurrent access)
+  3. Generate sub-answers in parallel via a thread pool — Groq HTTP calls
+     release the GIL so threads genuinely overlap, saving 6-15 s per query
+  4. Combine all sub-answers with a final synthesis call
+  5. Return a single QueryResult with merged citations
 """
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict
 
 from groq import Groq
@@ -35,21 +38,6 @@ Your task:
 5. Use markdown tables or bullet points for comparisons."""
 
 
-def _answer_sub_question(sub: Dict, top_k: int) -> tuple[Dict, QueryResult]:
-    retrieved = retrieve(
-        query=sub["question"],
-        tickers=[sub["ticker"]],
-        years=[sub["year"]],
-        top_k=top_k,
-    )
-    result = generate_answer(
-        query=sub["question"],
-        retrieved=retrieved,
-        query_type="sub_question",
-    )
-    return sub, result
-
-
 def synthesize(
     query:      str,
     tickers:    List[str],
@@ -58,22 +46,56 @@ def synthesize(
     top_k:      int = settings.rerank_top_k,
 ) -> QueryResult:
     """
-    Full multi-document synthesis pipeline — sequential execution.
-    Local Qdrant embedded mode uses SQLite which rejects concurrent openers,
-    so sub-questions run one at a time.
+    Multi-document synthesis pipeline.
+
+    Retrieval is sequential (Qdrant SQLite lock).
+    Generation is parallel (thread pool — Groq I/O releases the GIL).
     """
     sub_questions = decompose_query(query, tickers, years)
     logger.info(f"Synthesizing {len(sub_questions)} sub-questions for: '{query[:60]}'")
 
-    sub_results: List[tuple[Dict, QueryResult]] = []
-
+    # ── Phase 1: sequential retrieval ────────────────────────────────────────
+    retrieval_data: List[tuple[Dict, list]] = []
     for sub in sub_questions:
         try:
-            result = _answer_sub_question(sub, top_k)
-            sub_results.append(result)
-            logger.debug(f"  ✓ {sub['ticker']} FY{sub['year']}: {sub['question'][:50]}")
+            retrieved = retrieve(
+                query=sub["question"],
+                tickers=[sub["ticker"]],
+                years=[sub["year"]],
+                top_k=top_k,
+            )
+            retrieval_data.append((sub, retrieved))
         except Exception as exc:
-            logger.error(f"  ✗ Sub-question failed ({sub['ticker']} FY{sub['year']}): {exc}")
+            logger.error(f"  ✗ Retrieval failed ({sub['ticker']} FY{sub['year']}): {exc}")
+
+    if not retrieval_data:
+        return QueryResult(
+            query=query,
+            answer="Could not retrieve information for this query.",
+            citations=[], chunks_used=[], query_type=query_type,
+        )
+
+    # ── Phase 2: parallel generation ─────────────────────────────────────────
+    def _generate(item: tuple[Dict, list]) -> tuple[Dict, QueryResult]:
+        sub, retrieved = item
+        result = generate_answer(
+            query=sub["question"],
+            retrieved=retrieved,
+            query_type="sub_question",
+        )
+        return sub, result
+
+    sub_results: List[tuple[Dict, QueryResult]] = []
+    with ThreadPoolExecutor(max_workers=len(retrieval_data)) as pool:
+        futures = {pool.submit(_generate, item): item[0] for item in retrieval_data}
+        for future in as_completed(futures):
+            sub = futures[future]
+            try:
+                result = future.result()
+                sub_results.append(result)
+                logger.debug(f"  ✓ {sub['ticker']} FY{sub['year']}: {sub['question'][:50]}")
+            except Exception as exc:
+                logger.error(f"  ✗ Generation failed ({sub['ticker']} FY{sub['year']}): {exc}")
 
     # Build the synthesis input
     combined_parts = []
