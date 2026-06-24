@@ -102,7 +102,7 @@ def retrieve(
             query_dense          = dense,
             query_sparse_indices = sparse_idx,
             query_sparse_values  = sparse_val,
-            top_k                = 5,
+            top_k                = 10,
             chunk_type_filter    = "table",
         )
         raw_results.extend(table_hits)
@@ -123,7 +123,7 @@ def retrieve(
 
     # --- 4. Rerank ---
     # Ask for more than top_k so section-diversity filtering has room to work
-    reranked = rerank(query, candidates, top_k=min(top_k * 2, len(candidates)))
+    reranked = rerank(query, candidates, top_k=min(top_k * 3, len(candidates)))
 
     # --- 4b. Section + type diversity.
     #
