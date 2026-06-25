@@ -42,7 +42,19 @@ def main(skip_download: bool = False, skip_index: bool = False) -> None:
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <8}</level> | {message}",
     )
     settings.data_dir.mkdir(parents=True, exist_ok=True)
-    logger.add(settings.data_dir / "ingestion.log", level="DEBUG", rotation="10 MB")
+    _log_path = settings.data_dir / "ingestion.log"
+
+    def _file_sink(message: str) -> None:
+        # Loguru's built-in file sink uses seek() for rotation which can raise
+        # OSError 107 (ENOTCONN) on some Colab/FUSE-backed filesystems. Writing
+        # through a plain append-open avoids that and silently skips on I/O errors.
+        try:
+            with _log_path.open("a", encoding="utf-8") as fh:
+                fh.write(message)
+        except OSError:
+            pass
+
+    logger.add(_file_sink, level="DEBUG")
 
     # ------------------------------------------------------------------
     # Step 1 — Download
