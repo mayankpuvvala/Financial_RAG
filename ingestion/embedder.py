@@ -30,7 +30,10 @@ def _get_dense() -> TextEmbedding:
     global _dense_model
     if _dense_model is None:
         logger.info(f"Loading dense model: {settings.embedding_model}")
-        _dense_model = TextEmbedding(model_name=settings.embedding_model)
+        kwargs = {"model_name": settings.embedding_model}
+        if settings.model_cache_dir is not None:
+            kwargs["cache_dir"] = str(settings.model_cache_dir)
+        _dense_model = TextEmbedding(**kwargs)
     return _dense_model
 
 
@@ -38,7 +41,10 @@ def _get_sparse() -> SparseTextEmbedding:
     global _sparse_model
     if _sparse_model is None:
         logger.info(f"Loading sparse model: {settings.sparse_model}")
-        _sparse_model = SparseTextEmbedding(model_name=settings.sparse_model)
+        kwargs = {"model_name": settings.sparse_model}
+        if settings.model_cache_dir is not None:
+            kwargs["cache_dir"] = str(settings.model_cache_dir)
+        _sparse_model = SparseTextEmbedding(**kwargs)
     return _sparse_model
 
 
@@ -78,11 +84,23 @@ def index_chunks(
     for chunk in chunks:
         grouped[get_collection_name(chunk.ticker, chunk.fiscal_year)].append(chunk)
 
-    for col_name, col_chunks in sorted(grouped.items()):
-        if collection_exists(col_name) and not force_reindex:
-            logger.info(f"Skipping {col_name} — already indexed")
-            continue
+    needs_indexing = []
+    for name, col_chunks in sorted(grouped.items()):
+        if collection_exists(name) and not force_reindex:
+            logger.info(f"Skipping {name} — already indexed")
+        else:
+            needs_indexing.append((name, col_chunks))
 
+    if not needs_indexing:
+        logger.success(f"Done. Collections: {list_collections()}")
+        return
+
+    # Pre-warm both models before the loop so the download (if any) happens
+    # upfront rather than mid-way through the first batch.
+    _get_dense()
+    _get_sparse()
+
+    for col_name, col_chunks in needs_indexing:
         if not collection_exists(col_name):
             create_collection(col_name)
 
@@ -100,5 +118,7 @@ def index_chunks(
             batch_size=64,
         )
         logger.success(f"Indexed → {col_name}  ({len(col_chunks)} points)")
+
+    logger.success(f"Done. Collections: {list_collections()}")
 
     logger.success(f"Done. Collections: {list_collections()}")

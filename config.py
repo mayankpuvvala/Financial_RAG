@@ -1,7 +1,7 @@
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
-from typing import List, Dict
+from typing import List, Dict, Optional
 
 BASE_DIR = Path(__file__).resolve().parent
 
@@ -36,12 +36,15 @@ class Settings(BaseSettings):
     edgar_email: str = Field(validation_alias="EDGAR_EMAIL")
 
     # Paths
-    data_dir:      Path = BASE_DIR / "data"
-    raw_dir:       Path = BASE_DIR / "data" / "raw"
-    parsed_dir:    Path = BASE_DIR / "data" / "parsed"
-    test_sets_dir: Path = BASE_DIR / "data" / "test_sets"
-    chunks_dir:    Path = BASE_DIR / "data" / "chunks"
-    qdrant_path:   str  = str(BASE_DIR / "data" / "qdrant")
+    data_dir:       Path = BASE_DIR / "data"
+    raw_dir:        Path = BASE_DIR / "data" / "raw"
+    parsed_dir:     Path = BASE_DIR / "data" / "parsed"
+    test_sets_dir:  Path = BASE_DIR / "data" / "test_sets"
+    chunks_dir:     Path = BASE_DIR / "data" / "chunks"
+    qdrant_path:    str  = str(BASE_DIR / "data" / "qdrant")
+    # Set MODEL_CACHE_DIR=/content/drive/MyDrive/fastembed_cache in Colab to
+    # persist the 219 MB embedding model across runtime restarts.
+    model_cache_dir: Optional[Path] = None
 
     # Ingestion
     filing_type:          str = "10-K"
