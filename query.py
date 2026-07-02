@@ -7,7 +7,6 @@ Query entry point — routes a question through the full pipeline.
 """
 
 import sys
-import json
 from loguru import logger
 
 from routing.classifier import classify_query
@@ -17,7 +16,7 @@ from generation.synthesizer import synthesize
 from models import QueryResult
 
 
-def ask(query: str, verbose: bool = False) -> QueryResult:
+def ask(query: str) -> QueryResult:
     """Run a query through the full RAG pipeline and return a QueryResult."""
 
     # 1 — Classify
@@ -64,24 +63,24 @@ def ask(query: str, verbose: bool = False) -> QueryResult:
 
 
 def _print_result(result: QueryResult) -> None:
-    print("\n" + "═" * 60)
+    print("\n" + "=" * 60)
     print(f"QUERY: {result.query}")
-    print("═" * 60)
+    print("=" * 60)
     print(f"\n{result.answer}\n")
 
     if result.citations:
-        print("─" * 60)
+        print("-" * 60)
         print("SOURCES:")
         for c in result.citations:
             print(
                 f"  [{c['index']}] {c['company']} ({c['ticker']}) "
-                f"FY{c['fiscal_year']} — {c['section']}"
+                f"FY{c['fiscal_year']} - {c['section']}"
             )
 
-    print("─" * 60)
+    print("-" * 60)
     print(f"Query type : {result.query_type}")
     print(f"Chunks used: {len(result.chunks_used)}")
-    print("═" * 60 + "\n")
+    print("=" * 60 + "\n")
 
 
 if __name__ == "__main__":

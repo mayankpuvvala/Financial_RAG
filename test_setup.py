@@ -30,7 +30,7 @@ check("nltk",                lambda: __import__("nltk").__version__)
 check("tiktoken",            lambda: __import__("tiktoken"))
 check("sentence_transformers",lambda: __import__("sentence_transformers").__version__)
 check("fastembed",           lambda: __import__("fastembed").__version__)
-check("qdrant_client",       lambda: __import__("qdrant_client").__version__)
+check("qdrant_client",       lambda: __import__("qdrant_client.models", fromlist=["QdrantClient"]))
 check("groq",                lambda: __import__("groq").__version__)
 
 print("\n=== 2. qdrant_client hybrid-search models ===")

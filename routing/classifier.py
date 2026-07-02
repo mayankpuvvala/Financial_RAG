@@ -40,7 +40,7 @@ Classify the user query into exactly one type:
   out_of_scope — topic outside these documents (macro, non-financial, etc.)
 
 Also extract any tickers and fiscal years mentioned or clearly implied.
-Only include tickers from the available list and years from 2022-2024.
+Only include tickers from the available list and years from 2023-2025.
 If the user says "last year" or "recent" without a year, include all three years.
 If no specific company is mentioned, return an empty tickers list.
 

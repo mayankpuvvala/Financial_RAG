@@ -1,4 +1,3 @@
-from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -32,8 +31,8 @@ class Settings(BaseSettings):
     )
 
     # API keys
-    groq_api: str = Field(validation_alias="GROK_API")
-    edgar_email: str = Field(validation_alias="EDGAR_EMAIL")
+    groq_api: str
+    edgar_email: str
 
     # Paths
     data_dir:       Path = BASE_DIR / "data"

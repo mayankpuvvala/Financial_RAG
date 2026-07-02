@@ -120,5 +120,3 @@ def index_chunks(
         logger.success(f"Indexed → {col_name}  ({len(col_chunks)} points)")
 
     logger.success(f"Done. Collections: {list_collections()}")
-
-    logger.success(f"Done. Collections: {list_collections()}")
