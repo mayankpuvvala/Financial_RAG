@@ -28,9 +28,11 @@ groq>=0.9.0
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
 
-# Evaluation
-ragas>=0.1.21
+# Evaluation (RAGAS + judge LLM wrappers)
+ragas>=0.2.0
 datasets>=2.20.0
+langchain-groq>=0.1.0
+langchain-huggingface>=0.0.3
 
 # Utilities
 python-dotenv>=1.0.0
