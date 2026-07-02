@@ -11,6 +11,7 @@ Rules per block type:
 """
 
 import json
+import re
 from pathlib import Path
 from typing import List, Generator
 
@@ -46,8 +47,12 @@ def _count_tokens(text: str) -> int:
 
 def _split_table(text: str, max_tokens: int) -> List[str]:
     """
-    If a markdown table exceeds max_tokens, split it into row-group sub-chunks,
-    repeating the header + separator line in every sub-chunk.
+    If a markdown table exceeds max_tokens, split it into row-group sub-chunks.
+
+    The markdown header + separator are repeated in every sub-chunk.
+    Additionally, leading "context rows" (date headers, year labels) that
+    contain no financial figures (5+ digit integers) are also repeated so
+    every sub-chunk knows which fiscal year its numbers belong to.
     """
     if _count_tokens(text) <= max_tokens:
         return [text]
@@ -63,19 +68,38 @@ def _split_table(text: str, max_tokens: int) -> List[str]:
     if not data_rows:
         return [text]
 
-    header_tokens = _count_tokens(f"{header}\n{separator}\n")
-    # Estimate average tokens per row from first 10 rows
-    sample      = "\n".join(data_rows[:10])
-    avg_row_tok = max(1, _count_tokens(sample) // max(1, min(10, len(data_rows))))
+    # Identify leading "context rows": rows with no large financial integers.
+    # These carry the year/date headers (e.g. "September 28, 2024") and must
+    # appear in every sub-chunk so the LLM can match numbers to fiscal years.
+    context_rows: List[str] = []
+    for row in data_rows[:8]:
+        cells = [c.strip() for c in row.split("|") if c.strip()]
+        has_financial_data = any(
+            re.match(r"^\d{5,}$", c)                    # bare 5+ digit int
+            or re.match(r"^\d{1,3}(?:,\d{3}){2,}$", c) # e.g. 391,035
+            for c in cells
+        )
+        if not has_financial_data:
+            context_rows.append(row)
+        else:
+            break
+
+    effective_rows = data_rows[len(context_rows):]
+
+    fixed_header = "\n".join([header, separator] + context_rows) + "\n"
+    header_tokens = _count_tokens(fixed_header)
+
+    sample      = "\n".join(effective_rows[:10])
+    avg_row_tok = max(1, _count_tokens(sample) // max(1, min(10, len(effective_rows))))
     rows_per_chunk = max(1, (max_tokens - header_tokens) // avg_row_tok)
 
     sub_chunks = []
-    for i in range(0, len(data_rows), rows_per_chunk):
-        batch      = data_rows[i : i + rows_per_chunk]
-        chunk_text = "\n".join([header, separator] + batch)
+    for i in range(0, len(effective_rows), rows_per_chunk):
+        batch      = effective_rows[i : i + rows_per_chunk]
+        chunk_text = "\n".join([header, separator] + context_rows + batch)
         sub_chunks.append(chunk_text)
 
-    return sub_chunks
+    return sub_chunks if sub_chunks else [text]
 
 
 # ---------------------------------------------------------------------------

@@ -37,6 +37,9 @@ SEC filings use XBRL formatting that creates noisy markdown tables:
 - Currency symbols "$" appear in their own cell immediately LEFT of the numeric value
 - Values are often duplicated across adjacent columns — read each unique number once
 - All numbers are in MILLIONS of dollars unless the table header says otherwise
+- If year header rows are not visible in the chunk, treat the FIRST numeric column
+  as the fiscal year stated in the source header (e.g. "FY2024"), with subsequent
+  columns being prior years in descending order (FY2023, FY2022, …)
 
 To extract a value: find the row with the metric name, locate the column under
 the year heading in the header row, then read the numeric value in that column.

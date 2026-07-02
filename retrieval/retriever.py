@@ -127,10 +127,10 @@ def retrieve(
 
     # --- 4b. Section + type diversity.
     #
-    # Allow 1 TEXT chunk and 1 TABLE chunk per section.  This guarantees
-    # that the table containing the actual dollar figure (e.g. the R&D
-    # expense line in MD&A) always gets a context slot alongside the prose
-    # explanation, even when text chunks outscore table chunks in retrieval.
+    # Allow up to 2 TABLE chunks and 2 TEXT chunks per section.  Allowing 2
+    # (rather than 1) per type+section pair is critical for XBRL tables that
+    # are split into sub-chunks: the year-header sub-chunk and the financial-
+    # data sub-chunk are both needed so the LLM can match numbers to years.
     from collections import defaultdict
     type_section_counts: dict = defaultdict(int)
     diverse: List[dict] = []
@@ -138,7 +138,7 @@ def retrieve(
         section    = r["payload"].get("section_name", "")
         chunk_type = r["payload"].get("chunk_type", "text")
         key = (section, chunk_type)
-        if type_section_counts[key] < 1:
+        if type_section_counts[key] < 2:
             diverse.append(r)
             type_section_counts[key] += 1
         if len(diverse) >= top_k:

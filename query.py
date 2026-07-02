@@ -84,6 +84,12 @@ def _print_result(result: QueryResult) -> None:
 
 
 if __name__ == "__main__":
+    # Ensure UTF-8 output on Windows (cp1252 terminals crash on LLM Unicode)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+
     logger.remove()
     logger.add(sys.stderr, level="DEBUG", colorize=True,
                format="<green>{time:HH:mm:ss}</green> | <level>{level}</level> | {message}")

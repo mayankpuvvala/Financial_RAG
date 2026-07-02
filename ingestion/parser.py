@@ -255,6 +255,18 @@ def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
             continue
 
         match = _match_section(stripped)
+
+        # Some filers (AMZN, WFC) split "Item N." and the description across
+        # two lines.  When a short "Item N" line doesn't match on its own,
+        # join it with the next non-empty line and retry.
+        if not match and len(stripped) < 35 and re.search(r"^item\s*\d", stripped.lower()):
+            for j in range(i + 1, min(i + 5, total)):
+                next_stripped = lines[j].strip()
+                if next_stripped and len(next_stripped) < 100:
+                    combined = stripped + " " + next_stripped
+                    match = _match_section(combined)
+                    break
+
         if match:
             section_id, title = match
             all_occurrences[section_id].append((i, section_id, title))
