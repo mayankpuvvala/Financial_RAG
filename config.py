@@ -56,7 +56,7 @@ class Settings(BaseSettings):
     # Embeddings  (fastembed / ONNX — no PyTorch required)
     embedding_model:     str = "BAAI/bge-base-en-v1.5" #change to a larger model if you have a GPU with enough VRAM
     embedding_dim:       int = 768
-    embedding_batch_size: int = 32
+    embedding_batch_size: int = 64
     sparse_model:        str = "Qdrant/bm25"
 
     # Retrieval

@@ -26,11 +26,23 @@ _dense_model:  Optional[TextEmbedding]       = None
 _sparse_model: Optional[SparseTextEmbedding] = None
 
 
+def _cuda_providers() -> list:
+    """Return CUDA+CPU providers if a GPU is present, else CPU only."""
+    try:
+        import onnxruntime as ort
+        if "CUDAExecutionProvider" in ort.get_available_providers():
+            logger.info("GPU detected — using CUDAExecutionProvider for embeddings")
+            return ["CUDAExecutionProvider", "CPUExecutionProvider"]
+    except Exception:
+        pass
+    return ["CPUExecutionProvider"]
+
+
 def _get_dense() -> TextEmbedding:
     global _dense_model
     if _dense_model is None:
         logger.info(f"Loading dense model: {settings.embedding_model}")
-        kwargs = {"model_name": settings.embedding_model}
+        kwargs: dict = {"model_name": settings.embedding_model, "providers": _cuda_providers()}
         if settings.model_cache_dir is not None:
             kwargs["cache_dir"] = str(settings.model_cache_dir)
         _dense_model = TextEmbedding(**kwargs)
@@ -41,7 +53,7 @@ def _get_sparse() -> SparseTextEmbedding:
     global _sparse_model
     if _sparse_model is None:
         logger.info(f"Loading sparse model: {settings.sparse_model}")
-        kwargs = {"model_name": settings.sparse_model}
+        kwargs: dict = {"model_name": settings.sparse_model, "providers": _cuda_providers()}
         if settings.model_cache_dir is not None:
             kwargs["cache_dir"] = str(settings.model_cache_dir)
         _sparse_model = SparseTextEmbedding(**kwargs)
@@ -95,28 +107,33 @@ def index_chunks(
         logger.success(f"Done. Collections: {list_collections()}")
         return
 
-    # Pre-warm both models before the loop so the download (if any) happens
-    # upfront rather than mid-way through the first batch.
+    # Pre-warm both models before embedding so any model download happens once.
     _get_dense()
     _get_sparse()
 
+    # Embed ALL chunks across every collection in a single pass so the ONNX
+    # model processes one large batch instead of many small per-collection ones.
+    # This is significantly faster on both CPU (better SIMD utilisation) and
+    # GPU (hides kernel launch latency).
+    all_texts = [c.text for _, col_chunks in needs_indexing for c in col_chunks]
+    logger.info(f"Embedding {len(all_texts)} chunks in one batch (batch_size={batch_size}) …")
+    all_dense  = encode_dense(all_texts,  batch_size=batch_size)
+    all_sparse = encode_sparse(all_texts, batch_size=batch_size)
+
+    offset = 0
     for col_name, col_chunks in needs_indexing:
         if not collection_exists(col_name):
             create_collection(col_name)
 
-        logger.info(f"Embedding {len(col_chunks)} chunks → {col_name} …")
-        texts = [c.text for c in col_chunks]
-
-        dense_vecs  = encode_dense(texts,  batch_size=batch_size)
-        sparse_vecs = encode_sparse(texts, batch_size=batch_size)
-
+        n = len(col_chunks)
         upsert_chunks(
             collection_name=col_name,
             chunks=col_chunks,
-            dense_vectors=dense_vecs,
-            sparse_vectors=sparse_vecs,
+            dense_vectors=all_dense[offset : offset + n],
+            sparse_vectors=all_sparse[offset : offset + n],
             batch_size=64,
         )
-        logger.success(f"Indexed → {col_name}  ({len(col_chunks)} points)")
+        logger.success(f"Indexed → {col_name}  ({n} points)")
+        offset += n
 
     logger.success(f"Done. Collections: {list_collections()}")

@@ -1,5 +1,7 @@
+import os
 import re
 import json
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from io import StringIO
 from pathlib import Path
 from typing import List, Optional, Tuple, Dict
@@ -516,36 +518,61 @@ def parse_filing(
     return doc
 
 
+def _parse_record_worker(record: dict, parsed_dir: Path) -> Optional[ParsedDocument]:
+    """Top-level worker so ProcessPoolExecutor can pickle it on Windows (spawn)."""
+    out_file = parsed_dir / f"{record['ticker']}_{record['fiscal_year']}.json"
+    try:
+        doc = parse_filing(
+            file_path        = Path(record["file_path"]),
+            company          = record["company"],
+            ticker           = record["ticker"],
+            fiscal_year      = record["fiscal_year"],
+            accession_number = record["accession_number"],
+            filing_date      = record.get("filing_date"),
+        )
+        with open(out_file, "w", encoding="utf-8") as f:
+            f.write(doc.model_dump_json(indent=2))
+        return doc
+    except Exception as exc:
+        logger.error(f"Failed to parse {record['ticker']} FY{record['fiscal_year']}: {exc}")
+        return None
+
+
 def parse_all_filings(
     manifest:   List[dict],
     parsed_dir: Path,
 ) -> List[ParsedDocument]:
     parsed_dir.mkdir(parents=True, exist_ok=True)
-    documents: List[ParsedDocument] = []
+    documents:  List[ParsedDocument] = []
+    to_parse:   List[dict]           = []
 
     for record in manifest:
         out_file = parsed_dir / f"{record['ticker']}_{record['fiscal_year']}.json"
-
         if out_file.exists():
             logger.info(f"Skipping {record['ticker']} FY{record['fiscal_year']} (already parsed)")
             with open(out_file, encoding="utf-8") as f:
                 documents.append(ParsedDocument.model_validate(json.load(f)))
-            continue
+        else:
+            to_parse.append(record)
 
-        try:
-            doc = parse_filing(
-                file_path        = Path(record["file_path"]),
-                company          = record["company"],
-                ticker           = record["ticker"],
-                fiscal_year      = record["fiscal_year"],
-                accession_number = record["accession_number"],
-                filing_date      = record.get("filing_date"),
-            )
-            with open(out_file, "w", encoding="utf-8") as f:
-                f.write(doc.model_dump_json(indent=2))
-            documents.append(doc)
-        except Exception as exc:
-            logger.error(f"Failed to parse {record['ticker']} FY{record['fiscal_year']}: {exc}")
+    if to_parse:
+        max_workers = min(len(to_parse), os.cpu_count() or 1)
+        logger.info(f"Parsing {len(to_parse)} filings in parallel (workers={max_workers}) …")
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_parse_record_worker, rec, parsed_dir): rec
+                for rec in to_parse
+            }
+            for future in as_completed(futures):
+                rec = futures[future]
+                try:
+                    doc = future.result()
+                    if doc is not None:
+                        documents.append(doc)
+                except Exception as exc:
+                    logger.error(
+                        f"Worker failed for {rec['ticker']} FY{rec['fiscal_year']}: {exc}"
+                    )
 
     logger.success(f"Parsed {len(documents)} / {len(manifest)} filings")
     return documents

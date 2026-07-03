@@ -1,5 +1,6 @@
 import json
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Dict, Optional
 
@@ -234,6 +235,28 @@ def _collect_filing_records(
 # Public API
 # ---------------------------------------------------------------------------
 
+def _download_ticker_worker(
+    company: Dict, filing_type: str, limit: int, raw_dir: Path
+) -> List[Dict]:
+    """Thread worker: download one ticker and return its filing records."""
+    ticker = company["ticker"]
+    dl = Downloader(
+        company_name="FinancialRAG",
+        email_address=settings.edgar_email,
+        download_folder=str(raw_dir),
+    )
+    try:
+        logger.info(f"Downloading {filing_type} filings for {ticker} …")
+        dl.get(filing_type, ticker, limit=limit)
+        time.sleep(0.5)   # be polite to EDGAR
+    except Exception as exc:
+        logger.error(f"Download failed for {ticker}: {exc}")
+        return []
+    records = _collect_filing_records(ticker, filing_type, raw_dir)
+    logger.success(f"{ticker}: {len(records)} filing(s) ready")
+    return records
+
+
 def download_all_filings(
     companies:    List[Dict] = COMPANIES,
     filing_type:  str        = settings.filing_type,
@@ -243,31 +266,29 @@ def download_all_filings(
     """
     Download 10-K filings for all companies and return a manifest list.
     HTML is extracted from EDGAR's full-submission.txt on the fly.
+    Tickers are downloaded concurrently (4 threads) — each thread creates its
+    own Downloader instance so they don't share mutable state.
     """
     raw_dir.mkdir(parents=True, exist_ok=True)
 
-    dl = Downloader(
-        company_name="FinancialRAG",
-        email_address=settings.edgar_email,
-        download_folder=str(raw_dir),
-    )
-
     all_records: List[Dict] = []
 
-    for company in companies:
-        ticker = company["ticker"]
-        logger.info(f"Downloading {filing_type} filings for {ticker} …")
+    # 4 concurrent threads keeps us comfortably under EDGAR's 10 req/s limit
+    # while still being ~4× faster than a sequential loop over 12 tickers.
+    max_workers = min(4, len(companies))
+    logger.info(f"Downloading {len(companies)} tickers in parallel (workers={max_workers}) …")
 
-        try:
-            dl.get(filing_type, ticker, limit=limit)
-            time.sleep(0.5)   # be polite to EDGAR
-        except Exception as exc:
-            logger.error(f"Download failed for {ticker}: {exc}")
-            continue
-
-        records = _collect_filing_records(ticker, filing_type, raw_dir)
-        logger.success(f"{ticker}: {len(records)} filing(s) ready")
-        all_records.extend(records)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {
+            pool.submit(_download_ticker_worker, c, filing_type, limit, raw_dir): c["ticker"]
+            for c in companies
+        }
+        for future in as_completed(futures):
+            ticker = futures[future]
+            try:
+                all_records.extend(future.result())
+            except Exception as exc:
+                logger.error(f"Download worker failed for {ticker}: {exc}")
 
     manifest_path = raw_dir / "manifest.json"
     with open(manifest_path, "w") as f:

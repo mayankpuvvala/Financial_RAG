@@ -11,7 +11,9 @@ Rules per block type:
 """
 
 import json
+import os
 import re
+from concurrent.futures import ProcessPoolExecutor, as_completed
 from pathlib import Path
 from typing import List, Generator
 
@@ -237,6 +239,23 @@ def chunk_document(
 # Batch processing
 # ---------------------------------------------------------------------------
 
+def _chunk_doc_worker(doc: ParsedDocument, chunks_dir: Path) -> List[Chunk]:
+    """Top-level worker so ProcessPoolExecutor can pickle it on Windows (spawn)."""
+    doc_chunks = chunk_document(doc)
+    out_file   = chunks_dir / f"{doc.ticker}_{doc.fiscal_year}_chunks.json"
+    with open(out_file, "w") as f:
+        json.dump([c.model_dump() for c in doc_chunks], f, indent=2)
+    table_n = sum(1 for c in doc_chunks if c.chunk_type == "table")
+    text_n  = sum(1 for c in doc_chunks if c.chunk_type == "text")
+    foot_n  = sum(1 for c in doc_chunks if c.chunk_type == "footnote")
+    logger.success(
+        f"{doc.ticker} FY{doc.fiscal_year}: "
+        f"{len(doc_chunks)} chunks  "
+        f"(text={text_n}, table={table_n}, footnote={foot_n})"
+    )
+    return doc_chunks
+
+
 def chunk_all_documents(
     documents  : List[ParsedDocument],
     chunks_dir : Path = settings.chunks_dir,
@@ -249,32 +268,32 @@ def chunk_all_documents(
     """
     chunks_dir.mkdir(parents=True, exist_ok=True)
     all_chunks: List[Chunk] = []
+    to_chunk:   List[ParsedDocument] = []
 
     for doc in documents:
         out_file = chunks_dir / f"{doc.ticker}_{doc.fiscal_year}_chunks.json"
-
         if out_file.exists():
             logger.info(f"Skipping {doc.ticker} FY{doc.fiscal_year} (chunks already exist)")
             with open(out_file) as f:
-                loaded = [Chunk.model_validate(c) for c in json.load(f)]
-            all_chunks.extend(loaded)
-            continue
+                all_chunks.extend(Chunk.model_validate(c) for c in json.load(f))
+        else:
+            to_chunk.append(doc)
 
-        doc_chunks = chunk_document(doc)
-
-        with open(out_file, "w") as f:
-            json.dump([c.model_dump() for c in doc_chunks], f, indent=2)
-
-        table_n = sum(1 for c in doc_chunks if c.chunk_type == "table")
-        text_n  = sum(1 for c in doc_chunks if c.chunk_type == "text")
-        foot_n  = sum(1 for c in doc_chunks if c.chunk_type == "footnote")
-
-        logger.success(
-            f"{doc.ticker} FY{doc.fiscal_year}: "
-            f"{len(doc_chunks)} chunks  "
-            f"(text={text_n}, table={table_n}, footnote={foot_n})"
-        )
-        all_chunks.extend(doc_chunks)
+    if to_chunk:
+        max_workers = min(len(to_chunk), os.cpu_count() or 1)
+        logger.info(f"Chunking {len(to_chunk)} documents in parallel (workers={max_workers}) …")
+        with ProcessPoolExecutor(max_workers=max_workers) as pool:
+            futures = {
+                pool.submit(_chunk_doc_worker, doc, chunks_dir): doc
+                for doc in to_chunk
+            }
+            for future in as_completed(futures):
+                doc = futures[future]
+                try:
+                    doc_chunks = future.result()
+                    all_chunks.extend(doc_chunks)
+                except Exception as exc:
+                    logger.error(f"Worker failed for {doc.ticker} FY{doc.fiscal_year}: {exc}")
 
     logger.success(f"Chunking complete — {len(all_chunks)} total chunks across {len(documents)} documents")
     return all_chunks
