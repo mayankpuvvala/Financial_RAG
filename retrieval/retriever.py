@@ -25,6 +25,7 @@ from retrieval.vector_store import (
     get_collection_name,
     hybrid_search,
     list_collections,
+    scroll_by_section,
 )
 from retrieval.reranker import rerank
 from retrieval.parent_store import parent_store
@@ -107,6 +108,13 @@ def retrieve(
         )
         raw_results.extend(table_hits)
 
+        # c) Consolidated Statements of Income pass — bank filings (JPM, BAC,
+        #    GS, etc.) put the income statement in a separate named section that
+        #    hybrid search misses because query_points filters are ignored in
+        #    local Qdrant. Use scroll-based lookup instead.
+        stmt_hits = scroll_by_section(col, "Consolidated Statements of Income", limit=5)
+        raw_results.extend(stmt_hits)
+
     if not raw_results:
         logger.warning("Hybrid search returned no results")
         return []
@@ -119,13 +127,75 @@ def retrieve(
             seen.add(r["id"])
             unique.append(r)
 
-    candidates = unique[: settings.retrieval_top_k]
+    # Pass ALL unique candidates to the cross-encoder so income-statement and
+    # MD&A table chunks (which score ~#11-20 in BM25/dense hybrid) can beat
+    # Notes segment-level chunks via the more precise reranker signal.
+    candidates = unique
 
     # --- 4. Rerank ---
-    # Ask for more than top_k so section-diversity filtering has room to work
-    reranked = rerank(query, candidates, top_k=min(top_k * 3, len(candidates)))
+    # Score ALL unique candidates so the query-aware boost below can rescue
+    # income-statement chunks that rank outside the top-9 cross-encoder window.
+    reranked = rerank(query, candidates, top_k=len(candidates))
 
-    # --- 4b. Section + type diversity.
+    # --- 4b. Query-aware aggregate boost.
+    #
+    # The ms-marco cross-encoder underranks income-statement rows because they
+    # appear late in long XBRL table chunks.  Apply targeted boosts using both
+    # the chunk's SECTION and precise ROW LABEL patterns so we prefer the
+    # consolidated P&L row over footnote mentions of the same metric.
+    import re as _re
+    _q = query.lower()
+
+    def _score(r: dict) -> float:
+        return r.get("rerank_score", r["score"])
+
+    def _section(r: dict) -> str:
+        return r["payload"].get("section_name", "").lower()
+
+    def _text(r: dict) -> str:
+        return r["payload"].get("text", "")
+
+    # Revenue / net sales
+    # Additive bonuses so the boost works for both positive and negative CE scores.
+    if any(k in _q for k in ["revenue", "net sales", "total sales"]):
+        for r in reranked:
+            t = _text(r).lower()
+            if "total net sales" in t or "total revenue" in t or "total net revenues" in t:
+                r["rerank_score"] = _score(r) + 8.0   # consolidated total line
+            elif "net sales" in t or "revenue" in t:
+                r["rerank_score"] = _score(r) + 2.0   # segment or detail mention
+
+    # R&D: only boost the standalone "Research and development" income-statement row,
+    # NOT "Capitalized research and development" or other footnote variants.
+    elif any(k in _q for k in ["research", "r&d", "development expense"]):
+        _rd_row = _re.compile(r"\|\s*research\s+and\s+development\s*\|", _re.IGNORECASE)
+        for r in reranked:
+            t = _text(r)
+            if _rd_row.search(t):
+                r["rerank_score"] = _score(r) + 10.0  # exact P&L row label
+            elif "research and development" in t.lower():
+                r["rerank_score"] = _score(r) + 2.0   # prose/other mentions
+
+    # Net income: prefer "Consolidated Statements of Income" section, then exact row label.
+    # +10 for the income-statement section (which has higher Notes CE scores of ~6 to beat).
+    elif any(k in _q for k in ["net income", "earnings", "profit", "net loss"]):
+        _ni_row = _re.compile(r"\|\s*net\s+income\s*\|", _re.IGNORECASE)
+        for r in reranked:
+            t = _text(r)
+            sec = _section(r)
+            if "consolidated statements" in sec:
+                if _ni_row.search(t):
+                    r["rerank_score"] = _score(r) + 10.0  # income stmt + exact NI row
+                else:
+                    r["rerank_score"] = _score(r) + 6.0   # income stmt, other rows
+            elif _ni_row.search(t):
+                r["rerank_score"] = _score(r) + 2.0       # exact NI row in other section
+            elif "net income" in t.lower():
+                r["rerank_score"] = _score(r) + 0.5       # prose mention
+
+    reranked = sorted(reranked, key=lambda x: x.get("rerank_score", x["score"]), reverse=True)
+
+    # --- 4c. Section + type diversity.
     #
     # Allow up to 2 TABLE chunks and 2 TEXT chunks per section.  Allowing 2
     # (rather than 1) per type+section pair is critical for XBRL tables that

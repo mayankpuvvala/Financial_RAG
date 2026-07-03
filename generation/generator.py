@@ -16,9 +16,10 @@ from loguru import logger
 
 from config import settings
 from models import QueryResult, RetrievedChunk
+from retrieval.reranker import _compress_xbrl
 
 _ENCODER     = tiktoken.get_encoding("cl100k_base")
-MAX_CTX_TOKS = 2000   # per source — keeps total under Groq's 12k TPM on free tier
+MAX_CTX_TOKS = 600    # per source — reduced to stay within 100K TPD on free tier
 
 SYSTEM_PROMPT = """\
 You are a financial analyst with access to official SEC 10-K filings.
@@ -94,8 +95,11 @@ def _build_context(retrieved: List[RetrievedChunk]) -> tuple[str, List[dict]]:
 
         # Concatenate all chunk texts from this section (each chunk was
         # deemed relevant — keeping all avoids the problem of the "right"
-        # passage being in a deduped-out later chunk)
-        all_chunks_text = "\n\n".join(rc.chunk.text for rc in group)
+        # passage being in a deduped-out later chunk).
+        # Apply XBRL compression to remove repeated cells / empty columns so
+        # key metric rows (like "Research and development | $ | 29510") are
+        # not pushed past the truncation point by noisy XBRL preamble.
+        all_chunks_text = "\n\n".join(_compress_xbrl(rc.chunk.text) for rc in group)
         all_toks        = len(_ENCODER.encode(all_chunks_text))
         remaining       = MAX_CTX_TOKS - all_toks - 30
 
@@ -159,7 +163,7 @@ def generate_answer(
             {"role": "user",   "content": user_message},
         ],
         temperature=0.1,
-        max_tokens=1024,
+        max_tokens=512,
     )
 
     answer = response.choices[0].message.content.strip()

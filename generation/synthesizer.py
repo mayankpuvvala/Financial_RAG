@@ -142,19 +142,24 @@ def synthesize(
 
     logger.debug(f"Running synthesis call for {len(sub_results)} sub-answers")
 
-    synthesis_response = _get_client().chat.completions.create(
-        model=settings.generation_model,
-        messages=[
-            {"role": "system", "content": SYNTHESIS_SYSTEM},
-            {"role": "user",   "content": synthesis_input},
-        ],
-        temperature=0.1,
-        max_tokens=2048,
-    )
+    try:
+        synthesis_response = _get_client().chat.completions.create(
+            model=settings.generation_model,
+            messages=[
+                {"role": "system", "content": SYNTHESIS_SYSTEM},
+                {"role": "user",   "content": synthesis_input},
+            ],
+            temperature=0.1,
+            max_tokens=768,
+        )
+        answer = synthesis_response.choices[0].message.content.strip()
+    except Exception as exc:
+        logger.error(f"Synthesis call failed: {exc}")
+        answer = "\n\n".join(combined_parts)   # fall back to concatenated sub-answers
 
     return QueryResult(
         query=query,
-        answer=synthesis_response.choices[0].message.content.strip(),
+        answer=answer,
         citations=all_citations,
         chunks_used=all_chunks,
         query_type=query_type,

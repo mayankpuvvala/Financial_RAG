@@ -192,6 +192,44 @@ def hybrid_search(
     ]
 
 
+def scroll_by_section(
+    collection_name: str,
+    section_name: str,
+    limit: int = 10,
+) -> List[Dict]:
+    """
+    Return all chunks whose section_name exactly matches *section_name*.
+
+    Uses scroll (no vector scoring) so the caller must rank externally.
+    Assigns a fixed score of 0.4 so these entries are included as candidates
+    but don't dominate before the cross-encoder reranks them.
+
+    Note: query_points() with a payload filter is silently ignored in local
+    Qdrant (no payload indexes), so we fall back to scroll + Python filter.
+    """
+    client = get_client()
+    results: List[Dict] = []
+    offset = None
+
+    while len(results) < limit:
+        batch, offset = client.scroll(
+            collection_name=collection_name,
+            limit=min(200, limit * 10),
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for pt in batch:
+            if pt.payload.get("section_name", "") == section_name:
+                results.append({"id": str(pt.id), "score": 0.4, "payload": pt.payload})
+                if len(results) >= limit:
+                    break
+        if offset is None:
+            break
+
+    return results
+
+
 def search_single_vector(
     collection_name: str,
     query_dense: List[float],

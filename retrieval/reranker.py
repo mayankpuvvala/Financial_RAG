@@ -6,6 +6,7 @@ pair with a dedicated relevance model. Much more accurate than embedding
 cosine similarity because it sees both query and passage together.
 """
 
+import re
 from typing import List, Dict
 from functools import lru_cache
 
@@ -13,6 +14,48 @@ from loguru import logger
 from sentence_transformers import CrossEncoder
 
 from config import settings
+
+# Matches XBRL table pipe rows where a cell repeats ≥2 times consecutively.
+_XBRL_REPEAT_RE = re.compile(r"(\|[^|]+)\1+", re.MULTILINE)
+
+
+_TOTAL_ROW_RE = re.compile(r"^\|\s*total\b", re.IGNORECASE)
+
+
+def _compress_xbrl(text: str) -> str:
+    """
+    Collapse XBRL markdown table noise so the cross-encoder can see key metrics.
+
+    Two transformations:
+    1. De-duplicate repeated XBRL cells:
+       "| Net sales | Net sales | $ | 391035 | 391035 |" → "| Net sales | $ | 391035 |"
+    2. Float "Total" rows to the top of each table chunk so the cross-encoder's
+       early attention tokens see the consolidated figure first, not segment rows.
+       This fixes the case where "Total net sales | 391035" is buried under
+       many geographic or product segment rows.
+    """
+    lines = text.split("\n")
+    cleaned = []
+    for line in lines:
+        if "|" not in line or "---" in line:
+            cleaned.append(line)
+            continue
+        # De-duplicate adjacent identical cells
+        compressed = _XBRL_REPEAT_RE.sub(r"\1", line)
+        # Remove trailing empty cells
+        compressed = re.sub(r"(\|\s*)+$", "|", compressed.rstrip())
+        cleaned.append(compressed)
+
+    # Float "Total …" rows to just below the header (first two lines)
+    if len(cleaned) > 3:
+        header     = cleaned[:2]          # chunk title + markdown separator row
+        data_rows  = cleaned[2:]
+        total_rows = [r for r in data_rows if _TOTAL_ROW_RE.match(r.lstrip())]
+        other_rows = [r for r in data_rows if not _TOTAL_ROW_RE.match(r.lstrip())]
+        if total_rows:
+            cleaned = header + total_rows + other_rows
+
+    return "\n".join(cleaned)
 
 
 @lru_cache(maxsize=1)
@@ -36,7 +79,9 @@ def rerank(
         return []
 
     reranker = _get_reranker()
-    texts    = [c["payload"]["text"] for c in candidates]
+    # Compress XBRL noise before scoring so the cross-encoder sees clean
+    # "label | value" pairs rather than "label | label | label | value | value".
+    texts    = [_compress_xbrl(c["payload"]["text"]) for c in candidates]
     pairs    = [(query, t) for t in texts]
     scores   = reranker.predict(pairs, show_progress_bar=False)
 
