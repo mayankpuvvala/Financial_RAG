@@ -1,5 +1,12 @@
 """
-Cross-encoder reranker — BAAI/bge-reranker-base.
+Cross-encoder reranker — ms-marco-MiniLM-L-12-v2, via fastembed's ONNX
+TextCrossEncoder (same model weights as the sentence-transformers/PyTorch
+cross-encoder this used to run, just ONNX-converted) so the whole retrieval
+stack — dense embedding, sparse embedding, and reranking — shares one ONNX
+runtime instead of also pulling in PyTorch. That matters most on memory-
+constrained hosts (e.g. Railway's smaller tiers): PyTorch's own runtime
+footprint is large regardless of model size, so dropping it here is the
+single biggest lever for staying under a low memory cap.
 
 Takes the top-K hybrid search results and re-scores each (query, chunk_text)
 pair with a dedicated relevance model. Much more accurate than embedding
@@ -11,7 +18,7 @@ from typing import List, Dict
 from functools import lru_cache
 
 from loguru import logger
-from sentence_transformers import CrossEncoder
+from fastembed.rerank.cross_encoder import TextCrossEncoder
 
 from config import settings
 
@@ -59,9 +66,9 @@ def _compress_xbrl(text: str) -> str:
 
 
 @lru_cache(maxsize=1)
-def _get_reranker() -> CrossEncoder:
+def _get_reranker() -> TextCrossEncoder:
     logger.info(f"Loading reranker: {settings.reranker_model}  (first load)")
-    return CrossEncoder(settings.reranker_model)
+    return TextCrossEncoder(model_name=settings.reranker_model, providers=["CPUExecutionProvider"])
 
 
 def rerank(
@@ -81,12 +88,11 @@ def rerank(
     reranker = _get_reranker()
     # Compress XBRL noise before scoring so the cross-encoder sees clean
     # "label | value" pairs rather than "label | label | label | value | value".
-    texts    = [_compress_xbrl(c["payload"]["text"]) for c in candidates]
-    pairs    = [(query, t) for t in texts]
-    scores   = reranker.predict(pairs, show_progress_bar=False)
+    texts  = [_compress_xbrl(c["payload"]["text"]) for c in candidates]
+    scores = list(reranker.rerank(query, texts))
 
     scored = sorted(
-        zip(scores.tolist(), candidates),
+        zip(scores, candidates),
         key=lambda x: x[0],
         reverse=True,
     )

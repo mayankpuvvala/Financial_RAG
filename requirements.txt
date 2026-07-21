@@ -14,12 +14,9 @@ pydantic-settings>=2.0.0
 nltk>=3.8.0
 tiktoken>=0.7.0
 
-# Embeddings (local, free)
-sentence-transformers>=3.0.0
-
 # Vector store
 qdrant-client>=1.9.0
-fastembed>=0.3.6
+fastembed>=0.3.6   # ONNX dense/sparse embeddings AND cross-encoder reranking — no PyTorch
 
 # LLM — Groq free tier
 groq>=0.9.0
@@ -38,7 +35,3 @@ langchain-huggingface>=0.0.3
 python-dotenv>=1.0.0
 tqdm>=4.66.0
 loguru>=0.7.0
-
-# PyTorch — required by sentence-transformers and reranker
-# If you have a CUDA GPU: pip install torch --index-url https://download.pytorch.org/whl/cu121
-torch>=2.0.0

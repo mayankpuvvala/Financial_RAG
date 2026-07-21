@@ -62,7 +62,7 @@ class Settings(BaseSettings):
     # Retrieval
     retrieval_top_k: int = 10
     rerank_top_k:    int = 3
-    reranker_model:  str = "cross-encoder/ms-marco-MiniLM-L-12-v2"
+    reranker_model:  str = "Xenova/ms-marco-MiniLM-L-12-v2"  # ONNX port via fastembed — no PyTorch
 
     # Groq models
     generation_model: str = "llama-3.3-70b-versatile"

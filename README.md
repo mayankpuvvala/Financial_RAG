@@ -223,7 +223,7 @@ Financial_RAG/
 
 ## Key Technical Decisions
 
-- **fastembed (ONNX) over sentence-transformers** — no PyTorch/GPU needed, comparable speed on CPU.
+- **fastembed (ONNX) end-to-end — dense embedding, sparse embedding, AND reranking** — no PyTorch anywhere in the stack. The reranker uses `Xenova/ms-marco-MiniLM-L-12-v2`, an ONNX port of the same weights the original sentence-transformers cross-encoder used. This matters most on memory-capped hosts (Railway's smaller tiers, etc.) — PyTorch's own runtime footprint is large regardless of model size, so not loading a second ML framework alongside ONNX Runtime is the single biggest lever for staying under a low memory limit.
 - **Hybrid search (dense + BM25)** — dense vectors handle semantic queries ("revenue growth"); BM25 handles exact terms ("total net sales", "291035").
 - **Parent-child chunking** — small chunks for precise retrieval, full parent section text for LLM context.
 - **Cross-encoder reranking** — a joint (query, chunk) relevance signal, sharper than bi-encoder cosine similarity alone.
