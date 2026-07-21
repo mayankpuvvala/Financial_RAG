@@ -24,6 +24,18 @@ VALID_YEARS   = {2023, 2024, 2025}
 
 VALID_QUERY_TYPES = {"single_doc", "multi_doc", "temporal", "out_of_scope"}
 
+# What the retriever should prioritize surfacing, replacing what used to be a
+# growing pile of hand-maintained regex keyword lists in retriever.py (one
+# per metric: "revenue"/"net sales"/... , "research"/"r&d"/..., etc.). That
+# approach only ever covers phrasings someone thought to enumerate — this
+# question is answered by the SAME classifier call that already runs per
+# query (no added latency/cost), so it generalizes to any phrasing the model
+# understands as being about a given metric, not just literal keyword hits.
+VALID_FOCUS = {
+    "revenue", "rd_expense", "net_income", "operating_income",
+    "business_overview", "risk_factors", "other",
+}
+
 SYSTEM_PROMPT = """\
 You are a query classifier for a financial document RAG system.
 
@@ -63,12 +75,24 @@ Also extract fiscal years mentioned or clearly implied, from 2023-2025.
 If the user says "last year" or "recent" without a year, include all three years.
 If no specific company is mentioned, return empty lists for both company fields.
 
+Also classify what the query is actually asking about, as "focus":
+  revenue            — net sales / total revenue
+  rd_expense         — research & development spending
+  net_income         — net income / earnings / profit / loss
+  operating_income   — operating income / income from operations
+  business_overview  — what the company does, sells, makes, or its segments/
+                        products/industry/strategy (NOT a financial figure)
+  risk_factors       — risks, threats, uncertainties the company discloses
+  other              — anything else (financial statements in general, MD&A
+                        narrative, governance, etc.)
+
 Respond with ONLY valid JSON — no markdown, no extra text:
 {
   "query_type": "<type>",
   "tickers": ["TICKER", ...],
   "other_companies": ["Netflix", ...],
   "years": [2023, ...],
+  "focus": "<focus>",
   "reasoning": "<one short sentence>"
 }"""
 
@@ -78,7 +102,8 @@ class ClassifiedQuery(BaseModel):
     tickers:    List[str]
     years:      List[int]
     reasoning:  str
-    unresolved: List[str] = []   # company/ticker mentions outside the bundled 12
+    unresolved: List[str] = []      # company/ticker mentions outside the bundled 12
+    focus:      str        = "other"  # see VALID_FOCUS
 
 
 @lru_cache(maxsize=1)
@@ -121,16 +146,21 @@ def classify_query(query: str) -> ClassifiedQuery:
         other_mentions = data.get("other_companies", [])
         unresolved = [m.strip() for m in (raw_tickers + other_mentions) if m and m.strip()]
 
+        focus = data.get("focus", "other")
+        if focus not in VALID_FOCUS:
+            focus = "other"
+
         result = ClassifiedQuery(
             query_type=query_type,
             tickers=tickers,
             years=years,
             reasoning=data.get("reasoning", ""),
             unresolved=unresolved,
+            focus=focus,
         )
         logger.debug(
             f"Classified '{query[:60]}…' → {result.query_type} | {result.tickers} | "
-            f"{result.years} | unresolved={result.unresolved}"
+            f"{result.years} | focus={result.focus} | unresolved={result.unresolved}"
         )
         return result
 

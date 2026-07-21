@@ -47,6 +47,7 @@ def synthesize(
     years:      List[int],
     query_type: str = "multi_doc",
     top_k:      int = settings.rerank_top_k,
+    focus:      str = "other",
 ) -> QueryResult:
     """
     Multi-document synthesis pipeline.
@@ -66,6 +67,7 @@ def synthesize(
                 tickers=[sub["ticker"]],
                 years=[sub["year"]],
                 top_k=top_k,
+                focus=focus,
             )
             retrieval_data.append((sub, retrieved))
         except Exception as exc:

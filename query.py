@@ -45,6 +45,7 @@ def ask(query: str) -> QueryResult:
             tickers=classification.tickers,
             years=classification.years,
             query_type=classification.query_type,
+            focus=classification.focus,
         )
     else:
         # single_doc or summarization — standard retrieval
@@ -52,6 +53,7 @@ def ask(query: str) -> QueryResult:
             query=query,
             tickers=classification.tickers,
             years=classification.years,
+            focus=classification.focus,
         )
         result = generate_answer(
             query=query,

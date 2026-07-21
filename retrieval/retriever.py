@@ -30,13 +30,17 @@ from retrieval.vector_store import (
 from retrieval.reranker import rerank
 from retrieval.parent_store import parent_store
 
-# Casual "what does X sell/make" phrasing has poor lexical/semantic overlap
-# with the Business section's formal wording, so it needs both a guaranteed
-# scroll-based candidate pass (step 2d) and a rerank boost (step 4b).
-_BUSINESS_OVERVIEW_KEYWORDS = (
-    "sell", "sells", "product", "products", "core business", "business model",
-    "what industries", "main business", "primary business",
-)
+# Which section a given `focus` (see routing/classifier.py's VALID_FOCUS)
+# should be guaranteed a scroll-based candidate pass for, the same way
+# "Consolidated Statements of Income" already gets one below. Casual phrasing
+# ("nvidia sells what?") has poor lexical/semantic overlap with a section's
+# formal wording, so hybrid search alone can miss it entirely — scrolling by
+# section name sidesteps that instead of trying to out-guess every possible
+# phrasing with keywords.
+_FOCUS_SECTION_PASS = {
+    "business_overview": "Item 1: Business",
+    "risk_factors":       "Item 1A: Risk Factors",
+}
 
 
 def _target_collections(
@@ -77,9 +81,15 @@ def retrieve(
     tickers: List[str]   = (),
     years:   List[int]   = (),
     top_k:   int         = settings.rerank_top_k,
+    focus:   str         = "other",
 ) -> List[RetrievedChunk]:
     """
     Full retrieval pipeline — returns RetrievedChunk objects ready for the LLM.
+
+    `focus` comes from routing/classifier.py's per-query classification (the
+    same Groq call that already extracts query_type/tickers/years, so this
+    costs nothing extra) and tells retrieval which metric/section the query
+    is actually about — see VALID_FOCUS there for the fixed category list.
     """
     collections = _target_collections(list(tickers), list(years))
     if not collections:
@@ -87,7 +97,6 @@ def retrieve(
 
     # --- 1. Encode query ---
     dense, sparse_idx, sparse_val = encode_query(query)
-    _is_business_query = any(k in query.lower() for k in _BUSINESS_OVERVIEW_KEYWORDS)
 
     # --- 2. Hybrid search across all target collections ---
     # Run two passes per collection:
@@ -124,15 +133,11 @@ def retrieve(
         stmt_hits = scroll_by_section(col, "Consolidated Statements of Income", limit=5)
         raw_results.extend(stmt_hits)
 
-        # d) Business-overview queries ("nvidia sells what?") have poor
-        #    lexical/semantic overlap with the Business section's formal
-        #    wording ("designs, manufactures and markets"), so hybrid search
-        #    alone often doesn't surface it at all. Guarantee it's in the
-        #    candidate pool with a scroll-based pass; the reranker + boost
-        #    below (step 4b) then decide whether it actually wins.
-        if _is_business_query:
-            biz_hits = scroll_by_section(col, "Item 1: Business", limit=5)
-            raw_results.extend(biz_hits)
+        # d) focus-driven section pass — see _FOCUS_SECTION_PASS above.
+        focus_section = _FOCUS_SECTION_PASS.get(focus)
+        if focus_section:
+            focus_hits = scroll_by_section(col, focus_section, limit=5)
+            raw_results.extend(focus_hits)
 
     if not raw_results:
         logger.warning("Hybrid search returned no results")
@@ -156,14 +161,18 @@ def retrieve(
     # income-statement chunks that rank outside the top-9 cross-encoder window.
     reranked = rerank(query, candidates, top_k=len(candidates))
 
-    # --- 4b. Query-aware aggregate boost.
+    # --- 4b. Focus-aware aggregate boost.
     #
     # The ms-marco cross-encoder underranks income-statement rows because they
-    # appear late in long XBRL table chunks.  Apply targeted boosts using both
+    # appear late in long XBRL table chunks. Apply targeted boosts using both
     # the chunk's SECTION and precise ROW LABEL patterns so we prefer the
-    # consolidated P&L row over footnote mentions of the same metric.
+    # consolidated P&L row over footnote mentions of the same metric. Which
+    # branch applies is decided by `focus` (from the classifier — see its
+    # docstring), not by re-deriving intent from query keywords here; the row-
+    # label regexes below are a different, legitimate use of pattern matching
+    # — extracting a specific row from a known-shape markdown table, not
+    # guessing what the query means.
     import re as _re
-    _q = query.lower()
 
     def _score(r: dict) -> float:
         return r.get("rerank_score", r["score"])
@@ -174,13 +183,7 @@ def retrieve(
     def _text(r: dict) -> str:
         return r["payload"].get("text", "")
 
-    # Skip metric boosts for general overview / comparison queries (the decomposer
-    # uses "core business", "primary products", "operating segments" as a signal).
-    _is_overview = any(k in _q for k in ["core business", "primary products", "operating segment"])
-
-    # Revenue / net sales
-    # Additive bonuses so the boost works for both positive and negative CE scores.
-    if not _is_overview and any(k in _q for k in ["revenue", "net sales", "total sales"]):
+    if focus == "revenue":
         _rev_row = _re.compile(r"\|\s*(?:total\s+)?(?:net\s+)?(?:revenue|net\s+sales|net\s+revenues)\s*\|", _re.IGNORECASE)
         for r in reranked:
             t  = _text(r)
@@ -190,9 +193,9 @@ def retrieve(
             elif "net sales" in tl or "revenue" in tl:
                 r["rerank_score"] = _score(r) + 2.0   # segment or detail mention
 
-    # R&D: only boost the standalone "Research and development" income-statement row,
-    # NOT "Capitalized research and development" or other footnote variants.
-    elif not _is_overview and any(k in _q for k in ["research", "r&d", "development expense"]):
+    elif focus == "rd_expense":
+        # Only boost the standalone "Research and development" income-statement
+        # row, NOT "Capitalized research and development" or other footnotes.
         _rd_row = _re.compile(r"\|\s*research\s+and\s+development\s*\|", _re.IGNORECASE)
         for r in reranked:
             t = _text(r)
@@ -201,9 +204,10 @@ def retrieve(
             elif "research and development" in t.lower():
                 r["rerank_score"] = _score(r) + 2.0   # prose/other mentions
 
-    # Net income: prefer "Consolidated Statements of Income" section, then exact row label.
-    # +10 for the income-statement section (which has higher Notes CE scores of ~6 to beat).
-    elif not _is_overview and any(k in _q for k in ["net income", "earnings", "profit", "net loss"]):
+    elif focus == "net_income":
+        # Prefer "Consolidated Statements of Income" section, then exact row
+        # label. +10 for the income-statement section (which has higher Notes
+        # CE scores of ~6 to beat).
         _ni_row = _re.compile(r"\|\s*net\s+income\s*\|", _re.IGNORECASE)
         for r in reranked:
             t = _text(r)
@@ -218,8 +222,7 @@ def retrieve(
             elif "net income" in t.lower():
                 r["rerank_score"] = _score(r) + 0.5       # prose mention
 
-    # Operating income / income from operations
-    elif not _is_overview and any(k in _q for k in ["operating income", "income from operations", "operating profit", "operating loss"]):
+    elif focus == "operating_income":
         _oi_row = _re.compile(r"\|\s*(?:total\s+)?(?:operating\s+income|income\s+from\s+operations)\s*\|", _re.IGNORECASE)
         for r in reranked:
             t   = _text(r)
@@ -235,14 +238,15 @@ def retrieve(
             elif "operating income" in tl or "income from operations" in tl:
                 r["rerank_score"] = _score(r) + 0.5
 
-    # Business overview / "what does X sell or make" — casual phrasing like
-    # "nvidia sells what?" has poor lexical overlap with the Business section's
-    # own wording ("designs, manufactures"), so the cross-encoder alone tends
-    # to rank financial-statement tables above it. Boost Item 1: Business text
-    # chunks so the actual product/segment description wins.
-    elif _is_business_query:
+    elif focus in _FOCUS_SECTION_PASS:
+        # business_overview / risk_factors — casual phrasing ("nvidia sells
+        # what?") has poor lexical overlap with a section's own formal
+        # wording, so the cross-encoder alone tends to rank financial-
+        # statement tables above it. Boost the target section's text chunks
+        # so the actual descriptive content wins.
+        target_section = _FOCUS_SECTION_PASS[focus].lower()
         for r in reranked:
-            if "item 1: business" in _section(r) and r["payload"].get("chunk_type") == "text":
+            if _section(r) == target_section and r["payload"].get("chunk_type") == "text":
                 r["rerank_score"] = _score(r) + 8.0
 
     reranked = sorted(reranked, key=lambda x: x.get("rerank_score", x["score"]), reverse=True)

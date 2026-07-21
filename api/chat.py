@@ -83,8 +83,8 @@ def _run_pipeline(question: str, tickers=None, years=None) -> QueryResult:
         t = tickers or cls.tickers
         y = years   or cls.years
         if cls.query_type in ("multi_doc", "temporal"):
-            return synthesize(question, t, y, cls.query_type)
-        retrieved = retrieve(question, t, y)
+            return synthesize(question, t, y, cls.query_type, focus=cls.focus)
+        retrieved = retrieve(question, t, y, focus=cls.focus)
         return generate_answer(question, retrieved, cls.query_type)
     return ask(question)
 
