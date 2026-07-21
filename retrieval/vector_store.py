@@ -10,7 +10,7 @@ Hybrid search uses Qdrant's built-in RRF fusion over prefetch results.
 """
 
 import os
-from functools import lru_cache
+import threading
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
@@ -37,10 +37,28 @@ from config import settings
 # Client — single shared instance
 # ---------------------------------------------------------------------------
 
-@lru_cache(maxsize=1)
+# Local Qdrant takes an EXCLUSIVE file lock on the storage folder at
+# construction time. A plain @lru_cache doesn't protect against a cold-cache
+# race: retrieval now searches collections concurrently (see retriever.py),
+# and if get_client() is first called from multiple threads at once — e.g.
+# the very first multi-collection query after startup, since the API's
+# warm-up path never touches Qdrant — two threads can both start
+# constructing QdrantClient before either finishes and populates the cache,
+# and the second one fails with "already accessed by another instance" even
+# though they're in the same process. Double-checked locking makes only the
+# first caller actually construct it; everyone else just reads the cache.
+_client: Optional[QdrantClient] = None
+_client_lock = threading.Lock()
+
+
 def get_client() -> QdrantClient:
-    os.makedirs(settings.qdrant_path, exist_ok=True)
-    return QdrantClient(path=settings.qdrant_path)
+    global _client
+    if _client is None:
+        with _client_lock:
+            if _client is None:
+                os.makedirs(settings.qdrant_path, exist_ok=True)
+                _client = QdrantClient(path=settings.qdrant_path)
+    return _client
 
 
 # ---------------------------------------------------------------------------

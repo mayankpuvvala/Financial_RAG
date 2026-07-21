@@ -668,6 +668,14 @@ def parse_filing(
                 sections.append(section)
 
     doc = ParsedDocument(
+        # Deterministic, not the random-UUID default: chunks embedded from an
+        # earlier parse of the same filing reference doc_id as a foreign key
+        # into ParentStore for full-section context. A random doc_id would
+        # orphan every already-embedded chunk each time a filing gets
+        # re-parsed (e.g. a parser bug fix) without also being re-embedded —
+        # ParentStore silently falls back to the smaller child-chunk text,
+        # degrading (not breaking) answers in a way that's easy to miss.
+        doc_id=f"{ticker}_{fiscal_year}",
         source_path=str(file_path),
         company=company,
         ticker=ticker,
