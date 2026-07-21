@@ -151,14 +151,23 @@ def retrieve(
             seen.add(r["id"])
             unique.append(r)
 
-    # Pass ALL unique candidates to the cross-encoder so income-statement and
+    # Pass unique candidates to the cross-encoder so income-statement and
     # MD&A table chunks (which score ~#11-20 in BM25/dense hybrid) can beat
-    # Notes segment-level chunks via the more precise reranker signal.
-    candidates = unique
+    # Notes segment-level chunks via the more precise reranker signal. Capped
+    # rather than unbounded — for content-heavy filers (WFC's XBRL tables
+    # alone produce 2000+ chunks/year) the raw candidate count can run into
+    # the 60-90s, and reranking is CPU-bound (a full cross-encoder pass per
+    # candidate), so that's real, avoidable per-query latency. #40 is a wide
+    # enough margin above top_k=3 that nothing legitimately in contention
+    # gets cut — anything ranked below #40 by hybrid dense+BM25+RRF was never
+    # going to win the rerank anyway.
+    _RERANK_CANDIDATE_CAP = 40
+    candidates = unique[:_RERANK_CANDIDATE_CAP]
 
     # --- 4. Rerank ---
-    # Score ALL unique candidates so the query-aware boost below can rescue
-    # income-statement chunks that rank outside the top-9 cross-encoder window.
+    # Score every candidate (within the cap above) so the focus-aware boost
+    # below can still rescue income-statement chunks that rank outside the
+    # top few by raw cross-encoder score.
     reranked = rerank(query, candidates, top_k=len(candidates))
 
     # --- 4b. Focus-aware aggregate boost.
