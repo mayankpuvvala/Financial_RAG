@@ -8,6 +8,9 @@ data/parsed/
 data/chunks/
 data/*.log
 
+# SEC company-ticker registry cache (auto-refreshed weekly, see ingestion/registry.py)
+data/company_tickers.json
+
 # Keep manually created evaluation sets
 !data/test_sets/
 

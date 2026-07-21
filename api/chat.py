@@ -23,7 +23,7 @@ from pydantic import BaseModel
 
 from config import settings
 from query import ask
-from routing.classifier import classify_query
+from routing.resolver import classify_and_ensure
 from retrieval.retriever import retrieve
 from generation.generator import generate_answer
 from generation.synthesizer import synthesize
@@ -79,7 +79,7 @@ _init_db()
 def _run_pipeline(question: str, tickers=None, years=None) -> QueryResult:
     """Run the RAG pipeline with optional caller-supplied ticker/year filters."""
     if tickers or years:
-        cls = classify_query(question)
+        cls = classify_and_ensure(question)
         t = tickers or cls.tickers
         y = years   or cls.years
         if cls.query_type in ("multi_doc", "temporal"):

@@ -1,6 +1,7 @@
 import os
 import re
 import json
+from collections import defaultdict
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from io import StringIO
 from pathlib import Path
@@ -66,6 +67,10 @@ SECTION_PATTERNS: List[Tuple[str, str, str]] = [
     # ── Standalone title fallbacks (companies that omit "Item N") ──────────
     (r"^risk\s+factors$",                           "item_1a_risk_factors", "Item 1A: Risk Factors"),
     (r"management.s\s+discussion\s+and\s+analysis", "item_7_mda",           "Item 7: MD&A"),
+    # Some bank annual-report exhibits (e.g. WFC's EX-13) label MD&A "Financial
+    # Review" instead — must be anchored ($) so it doesn't match compound
+    # headings like "Financial Review — Risk Factors" in a table of contents.
+    (r"^financial\s+review$",                       "item_7_mda",           "Item 7: MD&A"),
     (r"^quantitative\s+and\s+qualitative",          "item_7a_market_risk",  "Item 7A: Quantitative Disclosures"),
     (r"financial\s+statements\s+and\s+supplementary","item_8_financials",   "Item 8: Financial Statements"),
     (r"^controls\s+and\s+procedures$",              "item_9a_controls",     "Item 9A: Controls and Procedures"),
@@ -163,9 +168,15 @@ def _table_to_markdown(df: pd.DataFrame) -> str:
     return "\n".join([h_line, sep_line] + d_lines)
 
 
-def _extract_tables(soup: BeautifulSoup) -> Dict[str, Tuple[str, List]]:
+def _extract_tables(soup: BeautifulSoup, start_idx: int = 0) -> Tuple[Dict[str, Tuple[str, List]], int]:
+    """Extract data tables, returning (placeholder -> (markdown, raw), next_free_idx).
+
+    start_idx/next_free_idx let callers extract tables from multiple
+    documents into one shared placeholder namespace (see
+    _split_embedded_documents) without collisions.
+    """
     tables: Dict[str, Tuple[str, List]] = {}
-    idx = 0
+    idx = start_idx
 
     for tag in soup.find_all("table"):
         if tag.parent is None:
@@ -195,7 +206,7 @@ def _extract_tables(soup: BeautifulSoup) -> Dict[str, Tuple[str, List]]:
             logger.debug(f"Table {idx}: {type(exc).__name__}: {exc}")
             tag.decompose()
 
-    return tables
+    return tables, idx
 
 
 # ---------------------------------------------------------------------------
@@ -210,30 +221,11 @@ def _match_section(text: str) -> Optional[Tuple[str, str]]:
     return None
 
 
-def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
-    """
-    Hybrid boundary detection — different strategies for Item-level vs
-    financial-statement sub-sections.
-
-    item_* sections  → FIRST occurrence past the 15 % TOC zone.
-      Rationale: Item-level headers sometimes appear as cross-references
-      deep inside financial footnotes (e.g. "see Item 7A"), causing
-      "keep last" to misplace them and balloon section sizes.
-
-    fs_* sub-sections → LAST occurrence inside the valid window.
-      Rationale: fs_* headers ("Consolidated Statements of Operations")
-      appear first in the Item 8 mini-table-of-contents, then again as
-      the actual statement header. "Keep first" would pick the TOC
-      listing (tiny content); "keep last" picks the actual statement.
-
-    Pass 2 enforces monotonic Item ordering so misdetections
-    (cross-refs, TOC stragglers) are dropped.
-    """
-    from collections import defaultdict
-
-    total      = len(lines)
-    skip_start = int(total * 0.15)
-    skip_end   = int(total * 0.97)
+def _collect_occurrences(
+    lines: List[str], skip_start: int, skip_end: int
+) -> Tuple[Dict[str, List[Tuple[int, str, str]]], Dict[str, Tuple[int, str, str]]]:
+    """Scan lines[skip_start:skip_end] for section-header candidates."""
+    total = len(lines)
 
     all_occurrences: Dict[str, List[Tuple[int, str, str]]] = defaultdict(list)
     # Sentinels injected by _annotate_fs_header_tables take absolute priority —
@@ -273,6 +265,33 @@ def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
             section_id, title = match
             all_occurrences[section_id].append((i, section_id, title))
 
+    return all_occurrences, sentinel_hits
+
+
+def _select_and_validate(
+    lines: List[str],
+    all_occurrences: Dict[str, List[Tuple[int, str, str]]],
+    sentinel_hits: Dict[str, Tuple[int, str, str]],
+    skip_end: int,
+) -> List[Tuple[int, str, str]]:
+    """
+    Hybrid boundary selection — different strategies for Item-level vs
+    financial-statement sub-sections.
+
+    item_* sections  → FIRST occurrence past the 15 % TOC zone.
+      Rationale: Item-level headers sometimes appear as cross-references
+      deep inside financial footnotes (e.g. "see Item 7A"), causing
+      "keep last" to misplace them and balloon section sizes.
+
+    fs_* sub-sections → LAST occurrence inside the valid window.
+      Rationale: fs_* headers ("Consolidated Statements of Operations")
+      appear first in the Item 8 mini-table-of-contents, then again as
+      the actual statement header. "Keep first" would pick the TOC
+      listing (tiny content); "keep last" picks the actual statement.
+
+    Pass 2 enforces monotonic Item ordering so misdetections
+    (cross-refs, TOC stragglers) are dropped.
+    """
     selected: Dict[str, Tuple[int, str, str]] = {}
     for section_id, occurrences in all_occurrences.items():
         if section_id in sentinel_hits:
@@ -349,6 +368,35 @@ def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
             validated.sort(key=lambda x: x[0])
 
     return validated
+
+
+def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
+    """Single-document convenience wrapper around collect + select/validate."""
+    total      = len(lines)
+    skip_start = int(total * 0.15)
+    skip_end   = int(total * 0.97)
+    all_occurrences, sentinel_hits = _collect_occurrences(lines, skip_start, skip_end)
+    return _select_and_validate(lines, all_occurrences, sentinel_hits, skip_end)
+
+
+# ---------------------------------------------------------------------------
+# Embedded-document splitting
+# ---------------------------------------------------------------------------
+
+# Filers occasionally incorporate content BY REFERENCE to a separately-filed
+# exhibit (e.g. Wells Fargo's Item 1A/7/8 point to EX-13, its Annual Report
+# to Shareholders) instead of including it inline in the 10-K. The downloader
+# concatenates such exhibits into one HTML file, delimited by this marker.
+# Each embedded document is a full standalone <html>...</html> tree, so they
+# must be parsed as SEPARATE BeautifulSoup documents — concatenating the raw
+# HTML and parsing it as one soup causes lxml to silently drop everything
+# after the first </html> close tag.
+_EMBEDDED_DOC_MARKER = re.compile(r"<!--\s*=====\s*embedded document:.*?=====\s*-->")
+
+
+def _split_embedded_documents(html: str) -> List[str]:
+    parts = [p for p in _EMBEDDED_DOC_MARKER.split(html) if p.strip()]
+    return parts if parts else [html]
 
 
 # ---------------------------------------------------------------------------
@@ -463,27 +511,73 @@ def parse_filing(
         raw_html = fh.read()
 
     cleaned_html = _strip_ixbrl(raw_html)
-    soup = BeautifulSoup(cleaned_html, "lxml")
+    segments     = _split_embedded_documents(cleaned_html)
 
-    for tag in soup(["script", "style", "meta", "link", "head", "noscript"]):
-        tag.decompose()
+    # Each embedded document (the 10-K wrapper, plus any incorporated-by-
+    # reference exhibit like EX-13) is parsed as its own BeautifulSoup tree
+    # AND boundary-validated independently, then the resulting section lists
+    # are concatenated in document order. This matters because monotonic
+    # Item-priority validation must not span documents: the 10-K wrapper's
+    # own stub sections (e.g. "Items 10-14: Corporate Governance") already
+    # advance the priority watermark, which would wrongly reject the exhibit's
+    # real, lower-priority sections (Risk Factors, MD&A) as "out of order" if
+    # validated together. Scoping validation per segment avoids that, and
+    # also keeps each document's own 15%-97% TOC-skip window correctly local.
+    tables: Dict[str, Tuple[str, List]] = {}
+    next_table_idx = 0
+    lines: List[str] = []
+    boundaries: List[Tuple[int, str, str]] = []
 
-    # Pre-annotate financial statement header tables before extraction.
-    # Some issuers (BAC, WFC) put headers like "Consolidated Statement of
-    # Income" inside <td> cells of the statement tables rather than as
-    # stand-alone <div> or <p> elements.  After _extract_tables replaces those
-    # tables with <<<TABLE_N>>> placeholders, the text disappears from the
-    # plain-text stream and boundary detection misses it.  By inserting a
-    # sentinel text node BEFORE the table here, the marker survives into
-    # get_text() output so _find_section_boundaries can detect it normally.
-    _annotate_fs_header_tables(soup)
+    for seg_html in segments:
+        soup = BeautifulSoup(seg_html, "lxml")
+        for tag in soup(["script", "style", "meta", "link", "head", "noscript"]):
+            tag.decompose()
 
-    tables   = _extract_tables(soup)
-    raw_text = soup.get_text(separator="\n")
-    raw_text = re.sub(r"\n{4,}", "\n\n\n", raw_text)
+        # Pre-annotate financial statement header tables before extraction.
+        # Some issuers (BAC, WFC) put headers like "Consolidated Statement of
+        # Income" inside <td> cells of the statement tables rather than as
+        # stand-alone <div> or <p> elements.  After _extract_tables replaces
+        # those tables with <<<TABLE_N>>> placeholders, the text disappears
+        # from the plain-text stream and boundary detection misses it.  By
+        # inserting a sentinel text node BEFORE the table here, the marker
+        # survives into get_text() output so boundary detection finds it.
+        _annotate_fs_header_tables(soup)
 
-    lines      = raw_text.split("\n")
-    boundaries = _find_section_boundaries(lines)
+        seg_tables, next_table_idx = _extract_tables(soup, start_idx=next_table_idx)
+        tables.update(seg_tables)
+
+        seg_text = soup.get_text(separator="\n")
+        seg_text = re.sub(r"\n{4,}", "\n\n\n", seg_text)
+        seg_lines = seg_text.split("\n")
+
+        seg_total      = len(seg_lines)
+        seg_skip_start = int(seg_total * 0.15)
+        seg_skip_end   = int(seg_total * 0.97)
+        seg_occurrences, seg_sentinels = _collect_occurrences(
+            seg_lines, seg_skip_start, seg_skip_end
+        )
+        seg_boundaries = _select_and_validate(
+            seg_lines, seg_occurrences, seg_sentinels, seg_skip_end
+        )
+
+        offset = len(lines)
+        boundaries.extend((i + offset, s, t) for (i, s, t) in seg_boundaries)
+        lines.extend(seg_lines)
+
+    # Disambiguate section_ids that recur across segments (e.g. the 10-K
+    # wrapper's stub "Notes to Financial Statements" pointer vs. the real one
+    # in the exhibit) so each stays independently addressable by parent_id —
+    # otherwise ParsedDocument.section_by_id() would always resolve to the
+    # first (possibly stub) match regardless of which section a chunk came
+    # from. Display titles are untouched; only the internal id gets suffixed.
+    seen_ids: Dict[str, int] = {}
+    disambiguated: List[Tuple[int, str, str]] = []
+    for line_no, sid, title in boundaries:
+        seen_ids[sid] = seen_ids.get(sid, 0) + 1
+        if seen_ids[sid] > 1:
+            sid = f"{sid}__{seen_ids[sid]}"
+        disambiguated.append((line_no, sid, title))
+    boundaries = disambiguated
 
     logger.info(
         f"  → {len(boundaries)} sections detected, "
@@ -494,7 +588,8 @@ def parse_filing(
 
     if not boundaries:
         logger.warning(f"  No sections found for {ticker} FY{fiscal_year}; using full document")
-        sections.append(_build_section("full_document", "Full Document", raw_text, tables, 0))
+        full_text = "\n".join(lines)
+        sections.append(_build_section("full_document", "Full Document", full_text, tables, 0))
     else:
         for i, (start_line, section_id, title) in enumerate(boundaries):
             end_line   = boundaries[i + 1][0] if i + 1 < len(boundaries) else len(lines)

@@ -27,27 +27,40 @@ VALID_QUERY_TYPES = {"single_doc", "multi_doc", "temporal", "out_of_scope"}
 SYSTEM_PROMPT = """\
 You are a query classifier for a financial document RAG system.
 
-Available documents: 10-K annual filings for these companies:
+Documents already indexed and ready: 10-K annual filings for these companies:
   Technology    : AAPL, MSFT, GOOGL, AMZN
   Banking       : JPM, WFC, BAC, GS
   Asset Mgmt    : BLK, STT, TROW, IVZ
 Fiscal years covered: 2023, 2024, 2025
 
+The system is NOT limited to that list — it can fetch and index the latest
+10-K for ANY publicly traded US company on demand. So never treat a company
+outside the list above as out_of_scope just because it's unfamiliar; extract
+it into "other_companies" instead (see below) so it can be looked up.
+
 Classify the user query into exactly one type:
   single_doc   — asks about ONE company in ONE specific year
   multi_doc    — compares companies, asks about a sector, or involves multiple firms
   temporal     — asks about a trend or change across MULTIPLE years for one company
-  out_of_scope — topic outside these documents (macro, non-financial, etc.)
+  out_of_scope — not about any specific company's financials at all (macro topics,
+                 general knowledge, non-financial questions)
 
-Also extract any tickers and fiscal years mentioned or clearly implied.
-Only include tickers from the available list and years from 2023-2025.
+Also extract every company mentioned or clearly implied, as either a ticker
+symbol or company name:
+  - "tickers": tickers FROM THE INDEXED LIST ABOVE ONLY.
+  - "other_companies": any other company/ticker mentioned that is NOT in the
+    indexed list above (e.g. "Netflix", "NFLX", "Tesla") — pass through
+    whatever the user wrote, ticker or name, don't normalize it.
+
+Also extract fiscal years mentioned or clearly implied, from 2023-2025.
 If the user says "last year" or "recent" without a year, include all three years.
-If no specific company is mentioned, return an empty tickers list.
+If no specific company is mentioned, return empty lists for both company fields.
 
 Respond with ONLY valid JSON — no markdown, no extra text:
 {
   "query_type": "<type>",
   "tickers": ["TICKER", ...],
+  "other_companies": ["Netflix", ...],
   "years": [2023, ...],
   "reasoning": "<one short sentence>"
 }"""
@@ -58,6 +71,7 @@ class ClassifiedQuery(BaseModel):
     tickers:    List[str]
     years:      List[int]
     reasoning:  str
+    unresolved: List[str] = []   # company/ticker mentions outside the bundled 12
 
 
 @lru_cache(maxsize=1)
@@ -93,13 +107,24 @@ def classify_query(query: str) -> ClassifiedQuery:
         tickers = [t.upper() for t in data.get("tickers", []) if t.upper() in VALID_TICKERS]
         years   = [int(y) for y in data.get("years", [])   if int(y) in VALID_YEARS]
 
+        # Anything the model tagged as a ticker but that isn't in our bundled
+        # list is also an unresolved mention (models sometimes put it there
+        # despite instructions), in addition to the dedicated field.
+        raw_tickers    = [t for t in data.get("tickers", []) if t.upper() not in VALID_TICKERS]
+        other_mentions = data.get("other_companies", [])
+        unresolved = [m.strip() for m in (raw_tickers + other_mentions) if m and m.strip()]
+
         result = ClassifiedQuery(
             query_type=query_type,
             tickers=tickers,
             years=years,
             reasoning=data.get("reasoning", ""),
+            unresolved=unresolved,
         )
-        logger.debug(f"Classified '{query[:60]}…' → {result.query_type} | {result.tickers} | {result.years}")
+        logger.debug(
+            f"Classified '{query[:60]}…' → {result.query_type} | {result.tickers} | "
+            f"{result.years} | unresolved={result.unresolved}"
+        )
         return result
 
     except Exception as exc:

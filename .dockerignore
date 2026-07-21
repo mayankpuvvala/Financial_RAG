@@ -1,0 +1,26 @@
+.git/
+.github/
+.vs/
+.vscode/
+.idea/
+.devcontainer/
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Data is meant to be a mounted volume, not baked into the image.
+data/raw/
+data/qdrant/
+data/parsed/
+data/chunks/
+data/*.log
+data/company_tickers.json
+data/chat_history.db
+
+.env
+*.ipynb_checkpoints/

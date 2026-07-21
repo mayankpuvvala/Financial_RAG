@@ -17,15 +17,25 @@ A production-quality Retrieval-Augmented Generation system that answers precise 
 
 "How did JPMorgan net income trend from 2023 to 2025?"
 → FY2023: $49,552M | FY2024: $58,471M | FY2025: …
+
+"What was Netflix's revenue in their latest 10-K?"
+→ (first time asked: fetches, parses, and indexes Netflix's latest 10-K on the fly)
+  Netflix's revenue in FY2025 was $45,183,036 thousand (~$45.2 billion). [1]
+  [1] NETFLIX INC (NFLX) | FY2025 | Item 15: Exhibits
 ```
 
-**Covered companies** — 35 filings (FY2023, FY2024, FY2025):
+**Pre-indexed** — 35 filings (FY2023, FY2024, FY2025), ready with no wait:
 
 | Sector | Tickers |
 |--------|---------|
 | Technology | AAPL · MSFT · GOOGL · AMZN |
 | Banking | JPM · WFC · BAC · GS |
 | Asset Management | BLK · STT · TROW · IVZ |
+
+**Not limited to those 12** — ask about any other publicly traded US company
+(e.g. "Tesla", "NFLX", "Coca-Cola") and the system resolves the ticker via
+SEC's company registry, fetches its latest 10-K, and indexes it on the spot.
+See [Agentic on-demand ingestion](#agentic-on-demand-ingestion-any-sec-listed-company) below.
 
 ---
 
@@ -103,6 +113,28 @@ python run_ingestion.py
 python query.py "What was Apple revenue in FY2024?"
 ```
 
+### Option C — Docker
+
+A `Dockerfile` is included for deploying the API + chat UI (CPU-only,
+fastembed/ONNX — no GPU needed). `data/` should be a mounted volume so the
+Qdrant index and downloaded filings survive container restarts, and
+secrets are passed as env vars rather than baked into the image:
+
+```bash
+docker build -t financial-rag .
+
+docker run -p 8000:8000 \
+  -e groq_api=YOUR_GROQ_KEY \
+  -e edgar_email=you@example.com \
+  -v financial_rag_data:/app/data \
+  financial-rag
+```
+
+A fresh volume starts with nothing indexed — either run
+`docker exec <container> python run_ingestion.py` once, or just start
+asking questions and let [on-demand ingestion](#agentic-on-demand-ingestion-any-sec-listed-company)
+index companies as they come up.
+
 ---
 
 ## Ingestion Pipeline
@@ -163,6 +195,46 @@ print(result.query_type)      # multi_doc | temporal | single_doc | out_of_scope
 | `multi_doc` | "Compare MSFT vs GOOGL R&D" | Decompose → retrieve each → synthesize |
 | `temporal` | "JPM net income 2023–2025" | Decompose by year → retrieve each → synthesize |
 | `out_of_scope` | "Bitcoin price?" | Early exit, no retrieval |
+
+---
+
+## Agentic on-demand ingestion (any SEC-listed company)
+
+The 12 companies above are pre-indexed so those questions answer instantly.
+Everything else routes through an on-demand pipeline instead of a hard
+"out of scope" wall:
+
+```
+ Query mentions a company outside the 12
+      │
+      ▼
+ routing/classifier.py  → flags it as an "unresolved" mention (ticker or name)
+      │
+      ▼
+ ingestion/registry.py  → resolves it against SEC's public company_tickers.json
+      │                    (ticker match first, then company-name substring match)
+      ▼
+ ingestion/auto_ingest.py
+      │  • skip entirely if already indexed (no network call)
+      │  • else: download the latest 10-K only (not all 3 years)
+      │  • parse → chunk → embed → index, reusing the already-warm
+      │    embedding/reranker models instead of reloading them
+      ▼
+ Same retrieval + generation pipeline as the bundled 12, from here on
+```
+
+Try it: `python query.py "What was Netflix's revenue in their latest 10-K?"`
+
+**On speed** — a brand-new company takes on the order of minutes on CPU-only
+hardware (dominated by embedding the new filing's ~100-300 chunks), not
+the ~15 minutes the full 35-filing bootstrap takes, and not the seconds a
+pre-indexed company answers in. It's a **one-time** cost: the result is
+persisted to disk and Qdrant exactly like the bundled 12, so every
+subsequent question about that company is instant. A per-ticker lock
+prevents two simultaneous requests for the same new company from
+duplicating the work, and failed lookups (bad ticker, no 10-K on file) are
+cached for 5 minutes so a typo doesn't hammer SEC EDGAR on every message in
+a chat session.
 
 ---
 
@@ -259,17 +331,27 @@ python -m evaluation.ragas_eval --test-set my_test_set.json --output scores.json
 ```
 Financial_RAG/
 ├── colab.ipynb              # End-to-end Colab notebook
-├── run_ingestion.py         # Ingestion pipeline entry point
+├── run_ingestion.py         # Ingestion pipeline entry point (bundled 12)
 ├── query.py                 # Query entry point (CLI + library)
 ├── config.py                # Settings (pydantic-settings)
 ├── models.py                # Pydantic data models
 ├── requirements.txt         # All dependencies
+├── Dockerfile                # CPU-only container build
+│
+├── api/
+│   ├── app.py                # FastAPI app — serves the UI + /query, /health
+│   └── chat.py                # /chat endpoints — sessions, history, review
+│
+├── ui/
+│   └── index.html             # Self-contained chat UI (no build step)
 │
 ├── ingestion/
-│   ├── downloader.py        # SEC EDGAR downloader
-│   ├── parser.py            # HTML → ParsedDocument (iXBRL-aware)
-│   ├── chunker.py           # Hierarchical chunker (text + tables)
-│   └── embedder.py          # fastembed ONNX + Qdrant indexer
+│   ├── downloader.py         # SEC EDGAR downloader (+ EX-13 exhibit merge)
+│   ├── parser.py             # HTML → ParsedDocument (iXBRL-aware)
+│   ├── chunker.py            # Hierarchical chunker (text + tables)
+│   ├── embedder.py           # fastembed ONNX + Qdrant indexer
+│   ├── registry.py           # SEC company_tickers.json resolver (any filer)
+│   └── auto_ingest.py        # On-demand single-company ingestion
 │
 ├── retrieval/
 │   ├── vector_store.py      # Qdrant client + hybrid search
@@ -279,7 +361,8 @@ Financial_RAG/
 │
 ├── routing/
 │   ├── classifier.py        # Query type classifier (Groq)
-│   └── decomposer.py        # Sub-question decomposer (Groq)
+│   ├── decomposer.py        # Sub-question decomposer (Groq)
+│   └── resolver.py          # classify + auto-ingest orchestration
 │
 ├── generation/
 │   ├── generator.py         # Answer generation (Groq)
@@ -288,11 +371,12 @@ Financial_RAG/
 ├── evaluation/
 │   └── ragas_eval.py        # RAGAS evaluation harness
 │
-└── data/                    # Auto-generated, gitignored
+└── data/                    # Auto-generated, gitignored (except test_sets/)
     ├── raw/                 # Downloaded HTML filings
     ├── parsed/              # Structured JSON documents
     ├── chunks/              # Chunked text for embedding
     ├── qdrant/              # Vector store (on-disk)
+    ├── company_tickers.json # SEC ticker registry cache (auto-ingest)
     └── test_sets/           # Evaluation datasets (tracked)
 ```
 
@@ -317,6 +401,9 @@ SEC filings use inline XBRL which creates markdown tables with numeric column in
 - Context headers prepended to every table chunk
 - Year rows repeated in every sub-chunk of split tables
 - LLM system prompt that explains XBRL formatting conventions
+
+**"Incorporated by reference" filings (e.g. Wells Fargo)**
+Some large bank holding companies file a slim 10-K that doesn't contain Item 1A (Risk Factors), Item 7 (MD&A), or Item 8 (Financial Statements) at all — it just points to a separately-filed "Annual Report to Shareholders" exhibit (EX-13) for all of it. Parsing only the primary 10-K document for these filers silently produces a near-empty index for exactly the sections users ask about most. The downloader now also extracts EX-13 when present and merges it in; the parser treats each embedded document as its own boundary-detection pass (rather than one combined pass) since concatenating two full HTML documents and parsing them as a single tree causes `lxml` to silently drop everything after the first `</html>` close tag, and because each document's own Item-priority ordering shouldn't cross-contaminate the other's.
 
 ---
 

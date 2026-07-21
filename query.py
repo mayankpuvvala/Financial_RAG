@@ -9,7 +9,7 @@ Query entry point — routes a question through the full pipeline.
 import sys
 from loguru import logger
 
-from routing.classifier import classify_query
+from routing.resolver import classify_and_ensure
 from retrieval.retriever import retrieve
 from generation.generator import generate_answer
 from generation.synthesizer import synthesize
@@ -19,8 +19,8 @@ from models import QueryResult
 def ask(query: str) -> QueryResult:
     """Run a query through the full RAG pipeline and return a QueryResult."""
 
-    # 1 — Classify
-    classification = classify_query(query)
+    # 1 — Classify (auto-ingesting any company outside the bundled 12)
+    classification = classify_and_ensure(query)
     logger.info(
         f"Query type : {classification.query_type}\n"
         f"Tickers    : {classification.tickers}\n"
