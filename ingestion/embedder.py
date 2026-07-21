@@ -42,7 +42,19 @@ def _get_dense() -> TextEmbedding:
     global _dense_model
     if _dense_model is None:
         logger.info(f"Loading dense model: {settings.embedding_model}")
-        kwargs: dict = {"model_name": settings.embedding_model, "providers": _cuda_providers()}
+        kwargs: dict = {
+            "model_name": settings.embedding_model,
+            "providers": _cuda_providers(),
+            # ONNX Runtime's default CPU memory arena pre-allocates and holds
+            # onto memory well beyond the model's own weights (measured ~800MB
+            # resident for a 215MB model) to avoid malloc/free overhead across
+            # repeated inference calls. Disabling it cuts that to ~450-650MB —
+            # the difference between fitting and OOM-killing on a 512MB-1GB
+            # memory-capped host (Railway's smaller tiers, etc.) — at the cost
+            # of allocating fresh buffers per call instead of reusing a pool,
+            # which barely matters here since compute time already dominates.
+            "enable_cpu_mem_arena": False,
+        }
         if settings.model_cache_dir is not None:
             kwargs["cache_dir"] = str(settings.model_cache_dir)
         _dense_model = TextEmbedding(**kwargs)
@@ -53,7 +65,11 @@ def _get_sparse() -> SparseTextEmbedding:
     global _sparse_model
     if _sparse_model is None:
         logger.info(f"Loading sparse model: {settings.sparse_model}")
-        kwargs: dict = {"model_name": settings.sparse_model, "providers": _cuda_providers()}
+        kwargs: dict = {
+            "model_name": settings.sparse_model,
+            "providers": _cuda_providers(),
+            "enable_cpu_mem_arena": False,   # see _get_dense()
+        }
         if settings.model_cache_dir is not None:
             kwargs["cache_dir"] = str(settings.model_cache_dir)
         _sparse_model = SparseTextEmbedding(**kwargs)

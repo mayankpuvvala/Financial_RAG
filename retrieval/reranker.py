@@ -68,7 +68,11 @@ def _compress_xbrl(text: str) -> str:
 @lru_cache(maxsize=1)
 def _get_reranker() -> TextCrossEncoder:
     logger.info(f"Loading reranker: {settings.reranker_model}  (first load)")
-    return TextCrossEncoder(model_name=settings.reranker_model, providers=["CPUExecutionProvider"])
+    return TextCrossEncoder(
+        model_name=settings.reranker_model,
+        providers=["CPUExecutionProvider"],
+        enable_cpu_mem_arena=False,   # see ingestion/embedder.py::_get_dense()
+    )
 
 
 def rerank(

@@ -110,6 +110,16 @@ _FS_RECOVERY_PATTERNS: List[Tuple[str, str, str]] = [
         "fs_income_stmt",   "Financial Statements"),
 ]
 
+# Anchored recovery patterns for Item-level headers that some filers (TROW,
+# IVZ, ...) render as a <table><td> cell — often a table-of-contents hyperlink
+# — rather than plain paragraph text. _extract_tables() decomposes non-data
+# tables entirely, so without a sentinel this text is lost before it ever
+# reaches the plain-text stream, and no amount of post-hoc line scanning
+# (unlike the plain-TOC-zone case AAPL/NVDA hit) can recover it.
+_ITEM_RECOVERY_PATTERNS: List[Tuple[str, str, str]] = [
+    (r"^item\s*1\.?\s*business$", "item_1_business", "Item 1: Business"),
+]
+
 _SECTION_PRIORITY: Dict[str, int] = {
     "item_1_business":     10,  "item_1a_risk_factors": 15,
     "item_1b_staff":       16,  "item_2_properties":    20,
@@ -221,6 +231,26 @@ def _match_section(text: str) -> Optional[Tuple[str, str]]:
     return None
 
 
+def _match_section_at(lines: List[str], i: int, total: int) -> Optional[Tuple[str, str]]:
+    """
+    _match_section on lines[i], with a lookahead fallback: some filers split
+    "Item N." and its description across two separate lines/text nodes
+    (AMZN, WFC, TROW, ...) — a short "Item N" line that doesn't match alone
+    is joined with the next non-empty line and retried.
+    """
+    stripped = lines[i].strip()
+    match = _match_section(stripped)
+
+    if not match and len(stripped) < 35 and re.search(r"^item\s*\d", stripped.lower()):
+        for j in range(i + 1, min(i + 5, total)):
+            next_stripped = lines[j].strip()
+            if next_stripped and len(next_stripped) < 100:
+                match = _match_section(stripped + " " + next_stripped)
+                break
+
+    return match
+
+
 def _collect_occurrences(
     lines: List[str], skip_start: int, skip_end: int
 ) -> Tuple[Dict[str, List[Tuple[int, str, str]]], Dict[str, Tuple[int, str, str]]]:
@@ -242,24 +272,13 @@ def _collect_occurrences(
 
         if stripped.startswith(_FS_SENTINEL_PREFIX):
             title = stripped[len(_FS_SENTINEL_PREFIX):]
-            for _, sid, t in _FS_RECOVERY_PATTERNS:
+            for _, sid, t in _HEADER_TABLE_RECOVERY_PATTERNS:
                 if t.lower() == title.lower():
                     sentinel_hits[sid] = (i, sid, t)
                     break
             continue
 
-        match = _match_section(stripped)
-
-        # Some filers (AMZN, WFC) split "Item N." and the description across
-        # two lines.  When a short "Item N" line doesn't match on its own,
-        # join it with the next non-empty line and retry.
-        if not match and len(stripped) < 35 and re.search(r"^item\s*\d", stripped.lower()):
-            for j in range(i + 1, min(i + 5, total)):
-                next_stripped = lines[j].strip()
-                if next_stripped and len(next_stripped) < 100:
-                    combined = stripped + " " + next_stripped
-                    match = _match_section(combined)
-                    break
+        match = _match_section_at(lines, i, total)
 
         if match:
             section_id, title = match
@@ -381,7 +400,7 @@ def _select_and_validate(
             stripped = lines[i].strip()
             if not stripped or len(stripped) > 250:
                 continue
-            match = _match_section(stripped)
+            match = _match_section_at(lines, i, len(lines))
             if match and match[0] == "item_1_business":
                 toc_zone_hits.append((i, match[0], match[1]))
         if toc_zone_hits:
@@ -472,27 +491,65 @@ def _build_section(
 _FS_SENTINEL_PREFIX = "FS_SECTION_HEADER:"
 
 
+_HEADER_TABLE_RECOVERY_PATTERNS = _FS_RECOVERY_PATTERNS + _ITEM_RECOVERY_PATTERNS
+
+
 def _annotate_fs_header_tables(soup: BeautifulSoup) -> None:
     """
     Scan every <table> for a cell (within the first 5 rows) whose text
-    matches an fs_* header pattern. When found, insert a sentinel text node
-    immediately before the <table> so the header survives as a plain-text
-    line after _extract_tables replaces the table with a placeholder.
+    matches an fs_* or Item-level header pattern. When found, insert a
+    sentinel text node immediately before the <table> so the header
+    survives as a plain-text line after _extract_tables replaces the table
+    with a placeholder.
 
     Targets issuers like BAC/WFC where section headers such as
     "Consolidated Statement of Income" live inside <td> cells — sometimes
-    after leading empty spacer rows — and are otherwise lost when the table
-    is replaced by a <<<TABLE_N>>> placeholder.
+    after leading empty spacer rows — and issuers like TROW/IVZ where even
+    "Item 1. Business" is a table-of-contents hyperlink cell rather than
+    plain paragraph text. Either way the text is otherwise lost when the
+    table is replaced by a <<<TABLE_N>>> placeholder or decomposed outright.
+    A sentinel this early in the document (e.g. a genuine TOC entry) is
+    still subject to the normal skip_start/skip_end window in
+    _collect_occurrences, so a TOC hyperlink match doesn't win over a real
+    later heading — it's just one more candidate line.
     """
     for table_tag in soup.find_all("table"):
         rows = table_tag.find_all("tr", recursive=True)
         matched = False
-        for row in rows[:5]:                              # scan first 5 rows
+
+        # fs_* headers sit near the top of a financial-statement table — keep
+        # this scoped to the original 5-row window so a wide table containing
+        # BOTH an fs_ cell and (further down) something matching an item-level
+        # pattern still resolves to the fs_ header, not gets skipped past it.
+        for row in rows[:5]:
             for cell in row.find_all(["td", "th"]):
                 cell_text = cell.get_text(separator=" ", strip=True).lower()
                 if not cell_text or len(cell_text) > 120:
                     continue
                 for pattern, section_id, title in _FS_RECOVERY_PATTERNS:
+                    if re.search(pattern, cell_text):
+                        sentinel = soup.new_string(f"\n{_FS_SENTINEL_PREFIX}{title}\n")
+                        table_tag.insert_before(sentinel)
+                        logger.debug(f"  Pre-annotated table: '{title}' ({cell_text[:50]})")
+                        matched = True
+                        break
+                if matched:
+                    break
+            if matched:
+                break
+
+        if matched:
+            continue
+
+        # Item-level TOC entries (TROW, IVZ) can be dozens of rows into a long
+        # TOC table — only fall back to this wider scan if no fs_ header
+        # already claimed this table above.
+        for row in rows[:60]:
+            for cell in row.find_all(["td", "th"]):
+                cell_text = cell.get_text(separator=" ", strip=True).lower()
+                if not cell_text or len(cell_text) > 120:
+                    continue
+                for pattern, section_id, title in _ITEM_RECOVERY_PATTERNS:
                     if re.search(pattern, cell_text):
                         sentinel = soup.new_string(f"\n{_FS_SENTINEL_PREFIX}{title}\n")
                         table_tag.insert_before(sentinel)
