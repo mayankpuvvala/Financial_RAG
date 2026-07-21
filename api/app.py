@@ -125,23 +125,52 @@ def collections():
 # retry while the first request is still running) — the pipeline's own
 # skip-if-already-done checks make repeat calls cheap once data exists, but
 # a genuinely concurrent second run would duplicate download/parse work.
-# _last_ingest_error/_last_ingest_step exist purely for remote diagnosis —
-# there's no shell/log access on a host like Railway without the CLI set up,
-# so without this a failed run is invisible other than "it stopped running".
+# _last_ingest_* exist purely for remote diagnosis — there's no shell/log
+# access on a host like Railway without the CLI set up, so without this a
+# failed OR silently-empty run is invisible other than "it stopped running".
+# Each pipeline step is called directly (not via run_ingestion.main()) and
+# its output count recorded, because more than one internal step swallows
+# per-item exceptions on purpose (one bad ticker/filing shouldn't abort a
+# 12-company run) — which also means a TOTAL failure at any step completes
+# "successfully" with an empty result and no exception to report. Counts at
+# each stage pinpoint which step actually produced nothing.
 _ingest_lock = threading.Lock()
 _ingest_running = False
 _last_ingest_error: Optional[str] = None
 _last_ingest_step: Optional[str] = None
+_last_ingest_counts: dict = {}
 
 
 def _run_ingestion_background() -> None:
-    global _ingest_running, _last_ingest_error, _last_ingest_step
+    global _ingest_running, _last_ingest_error, _last_ingest_step, _last_ingest_counts
     _last_ingest_error = None
+    _last_ingest_counts = {}
     try:
-        import run_ingestion
-        _last_ingest_step = "starting"
+        from config import settings as cfg
+        from ingestion.downloader import download_all_filings
+        from ingestion.parser import parse_all_filings
+        from ingestion.chunker import chunk_all_documents
+        from ingestion.embedder import index_chunks
+        from config import COMPANIES
+
         logger.info("Background ingestion started (bundled 12 companies)")
-        run_ingestion.main()
+
+        _last_ingest_step = "downloading"
+        manifest = download_all_filings(companies=COMPANIES, filing_type=cfg.filing_type,
+                                         limit=cfg.filings_per_company, raw_dir=cfg.raw_dir)
+        _last_ingest_counts["manifest"] = len(manifest)
+
+        _last_ingest_step = "parsing"
+        documents = parse_all_filings(manifest=manifest, parsed_dir=cfg.parsed_dir)
+        _last_ingest_counts["documents"] = len(documents)
+
+        _last_ingest_step = "chunking"
+        chunks = chunk_all_documents(documents=documents, chunks_dir=cfg.chunks_dir)
+        _last_ingest_counts["chunks"] = len(chunks)
+
+        _last_ingest_step = "indexing"
+        index_chunks(chunks)
+
         _last_ingest_step = "complete"
         logger.success("Background ingestion complete")
     except Exception as exc:
@@ -160,6 +189,7 @@ def ingest_status():
         "running": _ingest_running,
         "last_step": _last_ingest_step,
         "last_error": _last_ingest_error,
+        "counts": _last_ingest_counts,
         "collections_loaded": len(list_collections()),
     }
 
