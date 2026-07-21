@@ -54,6 +54,14 @@ class Settings(BaseSettings):
     # Ingestion
     filing_type:          str = "10-K"
     filings_per_company:  int = 3
+    # Parse/chunk ProcessPoolExecutor size. Each worker is a whole separate
+    # Python process (lxml/BeautifulSoup imports and all) — os.cpu_count()
+    # reflects the HOST's core count, not what a container is actually
+    # allocated, so sizing off it on a memory-capped host (Railway, etc.)
+    # spawns far more processes than the container can hold at once and
+    # exhausts it within seconds. Defaults to sequential (1); raise via the
+    # PARSE_WORKERS env var on a host known to have room (local dev, Colab).
+    parse_workers: int = 1
 
     # Chunking
     max_chunk_tokens:      int = 1000

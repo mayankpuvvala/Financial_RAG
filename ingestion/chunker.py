@@ -280,23 +280,31 @@ def chunk_all_documents(
             to_chunk.append(doc)
 
     if to_chunk:
-        # See parser.py's parse_all_filings() for why this is capped well
-        # below os.cpu_count() — that reflects the host, not what a
-        # memory-capped container is actually allocated.
-        max_workers = min(len(to_chunk), os.cpu_count() or 1, 2)
-        logger.info(f"Chunking {len(to_chunk)} documents in parallel (workers={max_workers}) …")
-        with ProcessPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_chunk_doc_worker, doc, chunks_dir): doc
-                for doc in to_chunk
-            }
-            for future in as_completed(futures):
-                doc = futures[future]
+        # See parser.py's parse_all_filings() and config.py's parse_workers
+        # for why this doesn't size off os.cpu_count() and skips the pool
+        # entirely by default (each worker is a whole separate process).
+        max_workers = min(len(to_chunk), settings.parse_workers)
+        if max_workers <= 1:
+            logger.info(f"Chunking {len(to_chunk)} documents sequentially …")
+            for doc in to_chunk:
                 try:
-                    doc_chunks = future.result()
-                    all_chunks.extend(doc_chunks)
+                    all_chunks.extend(_chunk_doc_worker(doc, chunks_dir))
                 except Exception as exc:
                     logger.error(f"Worker failed for {doc.ticker} FY{doc.fiscal_year}: {exc}")
+        else:
+            logger.info(f"Chunking {len(to_chunk)} documents in parallel (workers={max_workers}) …")
+            with ProcessPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_chunk_doc_worker, doc, chunks_dir): doc
+                    for doc in to_chunk
+                }
+                for future in as_completed(futures):
+                    doc = futures[future]
+                    try:
+                        doc_chunks = future.result()
+                        all_chunks.extend(doc_chunks)
+                    except Exception as exc:
+                        logger.error(f"Worker failed for {doc.ticker} FY{doc.fiscal_year}: {exc}")
 
     logger.success(f"Chunking complete — {len(all_chunks)} total chunks across {len(documents)} documents")
     return all_chunks

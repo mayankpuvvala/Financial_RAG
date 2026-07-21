@@ -11,6 +11,7 @@ import pandas as pd
 from bs4 import BeautifulSoup, Tag
 from loguru import logger
 
+from config import settings
 from models import ContentBlock, ParsedDocument, ParsedSection
 
 # ---------------------------------------------------------------------------
@@ -755,30 +756,36 @@ def parse_all_filings(
             to_parse.append(record)
 
     if to_parse:
-        # os.cpu_count() reflects the HOST's core count, not what a
-        # container is actually allocated — on a memory-capped host
-        # (Railway, etc.) that mismatch spawns far more full Python
-        # processes (each importing lxml/BeautifulSoup) than the container
-        # can hold at once, exhausting it before a single filing finishes.
-        # Each worker is a whole separate process, unlike the downloader's
-        # threads, so this cap is deliberately much smaller than that one.
-        max_workers = min(len(to_parse), os.cpu_count() or 1, 2)
-        logger.info(f"Parsing {len(to_parse)} filings in parallel (workers={max_workers}) …")
-        with ProcessPoolExecutor(max_workers=max_workers) as pool:
-            futures = {
-                pool.submit(_parse_record_worker, rec, parsed_dir): rec
-                for rec in to_parse
-            }
-            for future in as_completed(futures):
-                rec = futures[future]
-                try:
-                    doc = future.result()
-                    if doc is not None:
-                        documents.append(doc)
-                except Exception as exc:
-                    logger.error(
-                        f"Worker failed for {rec['ticker']} FY{rec['fiscal_year']}: {exc}"
-                    )
+        # Each ProcessPoolExecutor worker is a whole separate Python process
+        # (lxml/BeautifulSoup imports and all) — settings.parse_workers
+        # defaults to 1 on the assumption of a memory-capped host, in which
+        # case skip the pool entirely rather than pay for even one extra
+        # process. See config.py's parse_workers for why os.cpu_count() is
+        # never used to size this.
+        max_workers = min(len(to_parse), settings.parse_workers)
+        if max_workers <= 1:
+            logger.info(f"Parsing {len(to_parse)} filings sequentially …")
+            for rec in to_parse:
+                doc = _parse_record_worker(rec, parsed_dir)
+                if doc is not None:
+                    documents.append(doc)
+        else:
+            logger.info(f"Parsing {len(to_parse)} filings in parallel (workers={max_workers}) …")
+            with ProcessPoolExecutor(max_workers=max_workers) as pool:
+                futures = {
+                    pool.submit(_parse_record_worker, rec, parsed_dir): rec
+                    for rec in to_parse
+                }
+                for future in as_completed(futures):
+                    rec = futures[future]
+                    try:
+                        doc = future.result()
+                        if doc is not None:
+                            documents.append(doc)
+                    except Exception as exc:
+                        logger.error(
+                            f"Worker failed for {rec['ticker']} FY{rec['fiscal_year']}: {exc}"
+                        )
 
     logger.success(f"Parsed {len(documents)} / {len(manifest)} filings")
     return documents
