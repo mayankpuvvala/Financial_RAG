@@ -35,12 +35,26 @@ def _extract_fiscal_year_from_sgml(submission_path: Path) -> Optional[int]:
     return None
 
 
+# Some issuers — historically large bank holding companies like Wells Fargo —
+# file a slim 10-K "wrapper" that incorporates Item 1A (Risk Factors), Item 7
+# (MD&A), and Item 8 (Financial Statements) BY REFERENCE to a separately
+# exhibited "Annual Report to Shareholders" (EX-13). If we only parse the
+# wrapper, those items are just one-line pointers ("see Exhibit 13") with no
+# actual content. Merging EX-13 into the same HTML lets the section parser
+# see the real text. No other bundled filer uses this pattern, so this is a
+# no-op for everyone else.
+_PRIMARY_TYPES  = ("10-K", "10-K405", "10-KSB")
+_EXHIBIT_TYPES  = ("EX-13",)
+
+
 def _extract_html_from_full_submission(
     submission_path: Path,
     output_path: Path,
 ) -> bool:
     """
-    Stream through full-submission.txt and write the primary 10-K HTML to output_path.
+    Stream through full-submission.txt and write the primary 10-K HTML —
+    plus any incorporated-by-reference exhibits (EX-13) — to output_path,
+    concatenated in document order.
 
     EDGAR MIME format inside full-submission.txt:
         <DOCUMENT>
@@ -55,56 +69,73 @@ def _extract_html_from_full_submission(
         </TEXT>
         </DOCUMENT>
     """
-    in_doc       = False
-    is_10k_doc   = False
-    in_text      = False
+    wanted_prefixes = _PRIMARY_TYPES + _EXHIBIT_TYPES
+
+    in_doc          = False
+    doc_type        = None
+    wanted          = False
+    in_text         = False
     skip_xbrl_close = False
-    html_lines: List[str] = []
+    current_lines: List[str] = []
+    combined:      List[str] = []
+
+    def _flush() -> None:
+        if current_lines:
+            if combined:
+                combined.append(f"\n<!-- ===== embedded document: {doc_type} ===== -->\n")
+            combined.extend(current_lines)
 
     with open(submission_path, "r", encoding="utf-8", errors="replace") as f:
         for raw_line in f:
             stripped = raw_line.rstrip("\n").rstrip("\r")
 
             if stripped == "<DOCUMENT>":
-                in_doc     = True
-                is_10k_doc = False
-                in_text    = False
+                in_doc          = True
+                doc_type        = None
+                wanted          = False
+                in_text         = False
+                skip_xbrl_close = False
+                current_lines   = []
                 continue
 
-            if in_doc and not is_10k_doc:
+            if stripped == "</DOCUMENT>":
+                if wanted:
+                    _flush()
+                in_doc = False
+                continue
+
+            if in_doc and doc_type is None:
                 if stripped.startswith("<TYPE>"):
                     doc_type = stripped[6:].strip()
-                    if doc_type in ("10-K", "10-K405", "10-KSB"):
-                        is_10k_doc = True
-                    else:
-                        in_doc = False   # not the doc we want
+                    wanted   = any(
+                        doc_type == t or doc_type.startswith(t) for t in wanted_prefixes
+                    )
                 continue
 
-            if is_10k_doc and not in_text:
+            if wanted and not in_text:
                 if stripped == "<TEXT>":
                     in_text = True
                 continue
 
-            if in_text:
-                # End of text section — we're done
+            if wanted and in_text:
                 if stripped in ("</TEXT>", "</XBRL></TEXT>"):
-                    break
+                    in_text = False
+                    continue
 
-                # Skip the bare <XBRL> opening line
-                if not html_lines and stripped == "<XBRL>":
+                if not current_lines and stripped == "<XBRL>":
                     skip_xbrl_close = True
                     continue
 
-                # Skip the bare </XBRL> closing line
                 if skip_xbrl_close and stripped == "</XBRL>":
-                    break
+                    skip_xbrl_close = False
+                    continue
 
-                html_lines.append(raw_line)
+                current_lines.append(raw_line)
 
-    if not html_lines:
+    if not combined:
         return False
 
-    output_path.write_text("".join(html_lines), encoding="utf-8")
+    output_path.write_text("".join(combined), encoding="utf-8")
     return True
 
 
@@ -290,13 +321,32 @@ def download_all_filings(
             except Exception as exc:
                 logger.error(f"Download worker failed for {ticker}: {exc}")
 
+    # Merge into any existing manifest rather than overwriting it — this
+    # function is also called for single-ticker on-demand ingestion, and a
+    # blind overwrite would wipe out every other already-downloaded company.
     manifest_path = raw_dir / "manifest.json"
+    existing_records: List[Dict] = []
+    if manifest_path.exists():
+        try:
+            with open(manifest_path) as f:
+                existing_records = json.load(f)
+        except Exception:
+            existing_records = []
+
+    updated_keys = {(r["ticker"], r["fiscal_year"]) for r in all_records}
+    merged = [
+        r for r in existing_records
+        if (r["ticker"], r["fiscal_year"]) not in updated_keys
+    ]
+    merged.extend(all_records)
+    merged.sort(key=lambda r: (r["ticker"], r["fiscal_year"]))
+
     with open(manifest_path, "w") as f:
-        json.dump(all_records, f, indent=2)
+        json.dump(merged, f, indent=2)
 
     logger.info(
-        f"Download complete — {len(all_records)} total filings. "
-        f"Manifest → {manifest_path}"
+        f"Download complete — {len(all_records)} filing(s) this run, "
+        f"{len(merged)} total in manifest → {manifest_path}"
     )
     return all_records
 

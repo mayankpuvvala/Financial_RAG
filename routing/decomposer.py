@@ -28,17 +28,28 @@ Available tickers : AAPL, MSFT, GOOGL, AMZN, JPM, WFC, BAC, GS, BLK, STT, TROW, 
 Available years   : 2023, 2024, 2025
 
 SEC filing terminology — always use the long form, never abbreviations:
-  "R&D"       → "research and development expenses"
-  "CapEx"     → "capital expenditures"
-  "revenue"   → "total net sales" or "total revenue"
-  "earnings"  → "net income"
-  "margins"   → "gross margin" or "operating margin"
-  "SG&A"      → "selling general and administrative expenses"
+  "R&D"              → "research and development expenses"
+  "CapEx"            → "capital expenditures"
+  "revenue"          → "total net sales" or "total revenue"
+  "earnings"         → "net income"
+  "margins"          → "gross margin" or "operating margin"
+  "SG&A"             → "selling general and administrative expenses"
+  "operating income" → "income from operations" or "operating income"
 
 Rules:
 - One sub-question per company per year.
 - Use the full company name in the question, not just the ticker.
 - Write questions as if searching a document — use words the filing would contain.
+
+SPECIAL CASE — open-ended comparison with NO specific financial metric:
+  Applies ONLY when the query is a general "how is X different from Y?", "compare X and Y",
+  or "what does X do vs Y?" AND the query does NOT mention any specific metric such as:
+  revenue, income, profit, earnings, R&D, expenses, margin, cash flow, operating, sales, assets.
+  In that case, generate ONE sub-question per company asking for a business overview:
+    "Describe <Company>'s core business, primary products or services, revenue sources,
+     operating segments, and key financial performance"
+  Use the most recent year in the years list.
+  If the query DOES mention a specific metric, ignore this SPECIAL CASE and decompose normally.
 
 Respond with ONLY valid JSON — no markdown, no extra text:
 {

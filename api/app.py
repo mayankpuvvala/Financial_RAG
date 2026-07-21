@@ -11,10 +11,12 @@ Endpoints:
 """
 
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import HTMLResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -22,6 +24,9 @@ from query import ask
 from retrieval.vector_store import list_collections
 from ingestion.embedder import encode_query
 from retrieval.reranker import _get_reranker
+from api.chat import router as chat_router
+
+_UI_FILE = Path(__file__).parent.parent / "ui" / "index.html"
 
 
 # ---------------------------------------------------------------------------
@@ -59,6 +64,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+app.include_router(chat_router)
+
 
 # ---------------------------------------------------------------------------
 # Request / response schemas
@@ -90,6 +97,11 @@ class QueryResponse(BaseModel):
 # ---------------------------------------------------------------------------
 # Routes
 # ---------------------------------------------------------------------------
+
+@app.get("/", include_in_schema=False)
+def ui():
+    return HTMLResponse(_UI_FILE.read_text(encoding="utf-8"))
+
 
 @app.get("/health", tags=["meta"])
 def health():

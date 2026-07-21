@@ -155,19 +155,25 @@ def retrieve(
     def _text(r: dict) -> str:
         return r["payload"].get("text", "")
 
+    # Skip metric boosts for general overview / comparison queries (the decomposer
+    # uses "core business", "primary products", "operating segments" as a signal).
+    _is_overview = any(k in _q for k in ["core business", "primary products", "operating segment"])
+
     # Revenue / net sales
     # Additive bonuses so the boost works for both positive and negative CE scores.
-    if any(k in _q for k in ["revenue", "net sales", "total sales"]):
+    if not _is_overview and any(k in _q for k in ["revenue", "net sales", "total sales"]):
+        _rev_row = _re.compile(r"\|\s*(?:total\s+)?(?:net\s+)?(?:revenue|net\s+sales|net\s+revenues)\s*\|", _re.IGNORECASE)
         for r in reranked:
-            t = _text(r).lower()
-            if "total net sales" in t or "total revenue" in t or "total net revenues" in t:
-                r["rerank_score"] = _score(r) + 8.0   # consolidated total line
-            elif "net sales" in t or "revenue" in t:
+            t  = _text(r)
+            tl = t.lower()
+            if _rev_row.search(t) or "total net sales" in tl or "total revenue" in tl or "total net revenues" in tl:
+                r["rerank_score"] = _score(r) + 8.0   # consolidated total line / income-stmt row label
+            elif "net sales" in tl or "revenue" in tl:
                 r["rerank_score"] = _score(r) + 2.0   # segment or detail mention
 
     # R&D: only boost the standalone "Research and development" income-statement row,
     # NOT "Capitalized research and development" or other footnote variants.
-    elif any(k in _q for k in ["research", "r&d", "development expense"]):
+    elif not _is_overview and any(k in _q for k in ["research", "r&d", "development expense"]):
         _rd_row = _re.compile(r"\|\s*research\s+and\s+development\s*\|", _re.IGNORECASE)
         for r in reranked:
             t = _text(r)
@@ -178,7 +184,7 @@ def retrieve(
 
     # Net income: prefer "Consolidated Statements of Income" section, then exact row label.
     # +10 for the income-statement section (which has higher Notes CE scores of ~6 to beat).
-    elif any(k in _q for k in ["net income", "earnings", "profit", "net loss"]):
+    elif not _is_overview and any(k in _q for k in ["net income", "earnings", "profit", "net loss"]):
         _ni_row = _re.compile(r"\|\s*net\s+income\s*\|", _re.IGNORECASE)
         for r in reranked:
             t = _text(r)
@@ -192,6 +198,23 @@ def retrieve(
                 r["rerank_score"] = _score(r) + 2.0       # exact NI row in other section
             elif "net income" in t.lower():
                 r["rerank_score"] = _score(r) + 0.5       # prose mention
+
+    # Operating income / income from operations
+    elif not _is_overview and any(k in _q for k in ["operating income", "income from operations", "operating profit", "operating loss"]):
+        _oi_row = _re.compile(r"\|\s*(?:total\s+)?(?:operating\s+income|income\s+from\s+operations)\s*\|", _re.IGNORECASE)
+        for r in reranked:
+            t   = _text(r)
+            tl  = t.lower()
+            sec = _section(r)
+            if "consolidated statements" in sec:
+                if _oi_row.search(t):
+                    r["rerank_score"] = _score(r) + 10.0  # income stmt + exact OI row
+                else:
+                    r["rerank_score"] = _score(r) + 6.0   # income stmt, other rows
+            elif _oi_row.search(t):
+                r["rerank_score"] = _score(r) + 2.0
+            elif "operating income" in tl or "income from operations" in tl:
+                r["rerank_score"] = _score(r) + 0.5
 
     reranked = sorted(reranked, key=lambda x: x.get("rerank_score", x["score"]), reverse=True)
 

@@ -24,18 +24,21 @@ from retrieval.retriever import retrieve
 from generation.generator import generate_answer, _get_client
 
 SYNTHESIS_SYSTEM = """\
-You are a financial analyst synthesizing multiple research findings.
+You are a financial analyst synthesizing multiple research findings into a single answer.
 
 You will receive:
-- The original question
-- A set of sub-answers, each with their own citations
+- The ORIGINAL QUESTION from the user
+- A set of sub-answers extracted from SEC 10-K filings, each with citation numbers [N]
 
 Your task:
-1. Combine the sub-answers into ONE cohesive, well-structured response.
-2. Preserve all citation references [N] exactly as they appear.
-3. Add a brief summary or conclusion where relevant.
-4. Do not add information not present in the sub-answers.
-5. Use markdown tables or bullet points for comparisons."""
+1. Answer the ORIGINAL QUESTION directly and completely, using the sub-answers as evidence.
+2. When the original question is a general comparison ("how is X different from Y?",
+   "compare X and Y"), lead with the high-level business differences (industry, business model,
+   revenue sources, products/services), then add financial highlights.
+3. Preserve all citation references [N] exactly as they appear in the sub-answers.
+4. Use markdown — bullet points for lists, tables for side-by-side comparisons.
+5. Do not add any facts not present in the sub-answers.
+6. End with a concise "Key differences" summary bullet list."""
 
 
 def synthesize(
