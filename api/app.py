@@ -125,22 +125,43 @@ def collections():
 # retry while the first request is still running) — the pipeline's own
 # skip-if-already-done checks make repeat calls cheap once data exists, but
 # a genuinely concurrent second run would duplicate download/parse work.
+# _last_ingest_error/_last_ingest_step exist purely for remote diagnosis —
+# there's no shell/log access on a host like Railway without the CLI set up,
+# so without this a failed run is invisible other than "it stopped running".
 _ingest_lock = threading.Lock()
 _ingest_running = False
+_last_ingest_error: Optional[str] = None
+_last_ingest_step: Optional[str] = None
 
 
 def _run_ingestion_background() -> None:
-    global _ingest_running
+    global _ingest_running, _last_ingest_error, _last_ingest_step
+    _last_ingest_error = None
     try:
         import run_ingestion
+        _last_ingest_step = "starting"
         logger.info("Background ingestion started (bundled 12 companies)")
         run_ingestion.main()
+        _last_ingest_step = "complete"
         logger.success("Background ingestion complete")
-    except Exception:
+    except Exception as exc:
+        _last_ingest_step = "failed"
+        _last_ingest_error = f"{type(exc).__name__}: {exc}"
         logger.exception("Background ingestion failed")
     finally:
         with _ingest_lock:
             _ingest_running = False
+
+
+@app.get("/ingest/status", tags=["meta"])
+def ingest_status():
+    """Remote-diagnosis endpoint — last run's outcome when there's no log access."""
+    return {
+        "running": _ingest_running,
+        "last_step": _last_ingest_step,
+        "last_error": _last_ingest_error,
+        "collections_loaded": len(list_collections()),
+    }
 
 
 @app.post("/ingest", tags=["meta"])
@@ -148,9 +169,10 @@ def ingest(background_tasks: BackgroundTasks, token: Optional[str] = Query(None)
     """
     Trigger the bundled-12-company ingestion pipeline (download → parse →
     chunk → embed) in the background. Returns immediately — poll /health for
-    collections_loaded to track progress (35 collections when complete).
-    Safe to call repeatedly: already-downloaded/parsed/indexed companies are
-    skipped, so a second call after a partial run just resumes.
+    collections_loaded, or /ingest/status for step/error detail, to track
+    progress (35 collections when complete). Safe to call repeatedly:
+    already-downloaded/parsed/indexed companies are skipped, so a second
+    call after a partial or failed run just resumes.
     """
     if settings.admin_token and token != settings.admin_token:
         raise HTTPException(status_code=403, detail="Invalid or missing token")
