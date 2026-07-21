@@ -280,7 +280,10 @@ def chunk_all_documents(
             to_chunk.append(doc)
 
     if to_chunk:
-        max_workers = min(len(to_chunk), os.cpu_count() or 1)
+        # See parser.py's parse_all_filings() for why this is capped well
+        # below os.cpu_count() — that reflects the host, not what a
+        # memory-capped container is actually allocated.
+        max_workers = min(len(to_chunk), os.cpu_count() or 1, 2)
         logger.info(f"Chunking {len(to_chunk)} documents in parallel (workers={max_workers}) …")
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
             futures = {

@@ -237,6 +237,11 @@ def _match_section_at(lines: List[str], i: int, total: int) -> Optional[Tuple[st
     "Item N." and its description across two separate lines/text nodes
     (AMZN, WFC, TROW, ...) — a short "Item N" line that doesn't match alone
     is joined with the next non-empty line and retried.
+
+    Some filers (MSFT, BLK) go further and split the description WORD
+    itself across two adjacent inline tags (e.g. "ITEM 1. B" / "USINESS"),
+    so a space-joined retry still fails ("B usiness" != "business"). If the
+    space join doesn't match, also retry with no separator at all.
     """
     stripped = lines[i].strip()
     match = _match_section(stripped)
@@ -246,6 +251,8 @@ def _match_section_at(lines: List[str], i: int, total: int) -> Optional[Tuple[st
             next_stripped = lines[j].strip()
             if next_stripped and len(next_stripped) < 100:
                 match = _match_section(stripped + " " + next_stripped)
+                if not match:
+                    match = _match_section(stripped + next_stripped)
                 break
 
     return match
@@ -545,8 +552,10 @@ def _annotate_fs_header_tables(soup: BeautifulSoup) -> None:
         # TOC table — only fall back to this wider scan if no fs_ header
         # already claimed this table above.
         for row in rows[:60]:
-            for cell in row.find_all(["td", "th"]):
-                cell_text = cell.get_text(separator=" ", strip=True).lower()
+            cells = row.find_all(["td", "th"])
+            cell_texts = [c.get_text(separator=" ", strip=True).lower() for c in cells]
+
+            for cell_text in cell_texts:
                 if not cell_text or len(cell_text) > 120:
                     continue
                 for pattern, section_id, title in _ITEM_RECOVERY_PATTERNS:
@@ -558,6 +567,24 @@ def _annotate_fs_header_tables(soup: BeautifulSoup) -> None:
                         break
                 if matched:
                     break
+            if matched:
+                break
+
+            # AMZN/WFC split the heading across ADJACENT cells in the same row
+            # ("Item 1." in one <td>, "Business" in the next) rather than one
+            # cell holding the whole title. Concatenating non-empty cell texts
+            # with no separator recovers it; the anchored ^...$ pattern still
+            # rejects TOC rows that carry a trailing page-number cell (e.g.
+            # "item 1." + "business" + "3" -> "item 1.business3" fails "$").
+            joined = "".join(t for t in cell_texts if t)
+            if joined and len(joined) <= 120:
+                for pattern, section_id, title in _ITEM_RECOVERY_PATTERNS:
+                    if re.search(pattern, joined):
+                        sentinel = soup.new_string(f"\n{_FS_SENTINEL_PREFIX}{title}\n")
+                        table_tag.insert_before(sentinel)
+                        logger.debug(f"  Pre-annotated table (joined cells): '{title}' ({joined[:50]})")
+                        matched = True
+                        break
             if matched:
                 break
 
@@ -728,7 +755,14 @@ def parse_all_filings(
             to_parse.append(record)
 
     if to_parse:
-        max_workers = min(len(to_parse), os.cpu_count() or 1)
+        # os.cpu_count() reflects the HOST's core count, not what a
+        # container is actually allocated — on a memory-capped host
+        # (Railway, etc.) that mismatch spawns far more full Python
+        # processes (each importing lxml/BeautifulSoup) than the container
+        # can hold at once, exhausting it before a single filing finishes.
+        # Each worker is a whole separate process, unlike the downloader's
+        # threads, so this cap is deliberately much smaller than that one.
+        max_workers = min(len(to_parse), os.cpu_count() or 1, 2)
         logger.info(f"Parsing {len(to_parse)} filings in parallel (workers={max_workers}) …")
         with ProcessPoolExecutor(max_workers=max_workers) as pool:
             futures = {
