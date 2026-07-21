@@ -6,6 +6,7 @@ data/raw/
 data/qdrant/
 data/parsed/
 data/chunks/
+data/pending_index/
 data/*.log
 
 # SEC company-ticker registry cache (auto-refreshed weekly, see ingestion/registry.py)

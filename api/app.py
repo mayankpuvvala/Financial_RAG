@@ -121,75 +121,89 @@ def collections():
     return {"collections": list_collections()}
 
 
-# Guards against two ingestion runs overlapping (e.g. a double-click, or a
-# retry while the first request is still running) — the pipeline's own
-# skip-if-already-done checks make repeat calls cheap once data exists, but
-# a genuinely concurrent second run would duplicate download/parse work.
-# _last_ingest_* exist purely for remote diagnosis — there's no shell/log
-# access on a host like Railway without the CLI set up, so without this a
-# failed OR silently-empty run is invisible other than "it stopped running".
-# Each pipeline step is called directly (not via run_ingestion.main()) and
-# its output count recorded, because more than one internal step swallows
-# per-item exceptions on purpose (one bad ticker/filing shouldn't abort a
-# 12-company run) — which also means a TOTAL failure at any step completes
-# "successfully" with an empty result and no exception to report. Counts at
-# each stage pinpoint which step actually produced nothing.
+# Ingestion runs as a genuinely separate OS PROCESS (subprocess.Popen), not
+# just a background thread in this process. Running the full bundled-12
+# pipeline (download + parse + chunk + embed thousands of chunks) in-process
+# took the whole API server down with it on Railway's memory-capped tier —
+# once downloads actually started succeeding (see the edgar_email whitespace
+# fix), the pipeline did real work for the first time and the process was
+# OOM-killed mid-run, which also killed the health endpoint, which looked
+# from the outside like the app had simply disappeared for 10+ minutes. A
+# subprocess crash only ends the subprocess: the API keeps serving /health
+# and everything else throughout, and a failure is visible as a captured
+# exit code instead of total silence. Output is tailed into a bounded buffer
+# since there's no shell/log access on a host like Railway without the CLI
+# set up — this is the only way to see what happened.
 _ingest_lock = threading.Lock()
 _ingest_running = False
-_last_ingest_error: Optional[str] = None
-_last_ingest_step: Optional[str] = None
-_last_ingest_counts: dict = {}
+_ingest_process: Optional[object] = None
+_ingest_tail: List[str] = []
+_ingest_exit_code: Optional[int] = None
+_INGEST_TAIL_MAXLEN = 200
 
 
-def _run_ingestion_background() -> None:
-    global _ingest_running, _last_ingest_error, _last_ingest_step, _last_ingest_counts
-    _last_ingest_error = None
-    _last_ingest_counts = {}
+def _run_ingestion_subprocess() -> None:
+    global _ingest_running, _ingest_process, _ingest_tail, _ingest_exit_code
+    import json
+    import subprocess
+    import sys
+
+    from ingestion.embedder import flush_pending_artifacts
+
+    _ingest_tail = []
+    _ingest_exit_code = None
     try:
-        from config import settings as cfg
-        from ingestion.downloader import download_all_filings
-        from ingestion.parser import parse_all_filings
-        from ingestion.chunker import chunk_all_documents
-        from ingestion.embedder import index_chunks
-        from config import COMPANIES
+        # Local Qdrant holds an exclusive per-process file lock — this API
+        # server already has it, so the subprocess can never open Qdrant
+        # itself. Tell it (via a plain file, no lock needed) which
+        # collections already exist so it can skip them, and have it embed
+        # to disk artifacts instead of writing to Qdrant directly. This
+        # process — which already holds the lock — flushes those artifacts
+        # into Qdrant afterward (see embedder.py's embed_chunks_to_artifacts
+        # / flush_pending_artifacts split).
+        pending_dir = Path(settings.data_dir) / "pending_index"
+        pending_dir.mkdir(parents=True, exist_ok=True)
+        skip_file = pending_dir / "_skip_collections.json"
+        skip_file.write_text(json.dumps(list_collections()), encoding="utf-8")
 
-        logger.info("Background ingestion started (bundled 12 companies)")
-
-        _last_ingest_step = "downloading"
-        manifest = download_all_filings(companies=COMPANIES, filing_type=cfg.filing_type,
-                                         limit=cfg.filings_per_company, raw_dir=cfg.raw_dir)
-        _last_ingest_counts["manifest"] = len(manifest)
-
-        _last_ingest_step = "parsing"
-        documents = parse_all_filings(manifest=manifest, parsed_dir=cfg.parsed_dir)
-        _last_ingest_counts["documents"] = len(documents)
-
-        _last_ingest_step = "chunking"
-        chunks = chunk_all_documents(documents=documents, chunks_dir=cfg.chunks_dir)
-        _last_ingest_counts["chunks"] = len(chunks)
-
-        _last_ingest_step = "indexing"
-        index_chunks(chunks)
-
-        _last_ingest_step = "complete"
-        logger.success("Background ingestion complete")
+        proc = subprocess.Popen(
+            [sys.executable, "run_ingestion.py", "--isolated"],
+            cwd=str(Path(__file__).parent.parent),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1,
+        )
+        _ingest_process = proc
+        for line in proc.stdout:
+            _ingest_tail.append(line.rstrip("\n"))
+            if len(_ingest_tail) > _INGEST_TAIL_MAXLEN:
+                _ingest_tail.pop(0)
+        proc.wait()
+        _ingest_exit_code = proc.returncode
+        if proc.returncode == 0:
+            logger.success("Ingestion subprocess completed — flushing artifacts into Qdrant")
+            flushed = flush_pending_artifacts(pending_dir)
+            _ingest_tail.append(f"[flush] {flushed} collection(s) written to Qdrant")
+            logger.success(f"Flushed {flushed} collection(s) into Qdrant")
+        else:
+            logger.error(f"Ingestion subprocess exited with code {proc.returncode}")
     except Exception as exc:
-        _last_ingest_step = "failed"
-        _last_ingest_error = f"{type(exc).__name__}: {exc}"
-        logger.exception("Background ingestion failed")
+        _ingest_tail.append(f"[launcher error] {type(exc).__name__}: {exc}")
+        logger.exception("Failed to launch ingestion subprocess")
     finally:
+        _ingest_process = None
         with _ingest_lock:
             _ingest_running = False
 
 
 @app.get("/ingest/status", tags=["meta"])
-def ingest_status():
+def ingest_status(tail: int = Query(40, ge=1, le=200)):
     """Remote-diagnosis endpoint — last run's outcome when there's no log access."""
     return {
         "running": _ingest_running,
-        "last_step": _last_ingest_step,
-        "last_error": _last_ingest_error,
-        "counts": _last_ingest_counts,
+        "exit_code": _ingest_exit_code,
+        "log_tail": _ingest_tail[-tail:],
         "collections_loaded": len(list_collections()),
     }
 
@@ -213,11 +227,11 @@ def ingest(background_tasks: BackgroundTasks, token: Optional[str] = Query(None)
             return {"status": "already running", "collections_loaded": len(list_collections())}
         _ingest_running = True
 
-    background_tasks.add_task(_run_ingestion_background)
+    background_tasks.add_task(_run_ingestion_subprocess)
     return {
         "status": "started",
         "collections_loaded_now": len(list_collections()),
-        "note": "poll GET /health — expect 35 collections when done",
+        "note": "poll GET /ingest/status (log tail + exit code) or GET /health (collections_loaded) — expect 35 when done",
     }
 
 
@@ -232,7 +246,7 @@ def query(req: QueryRequest):
         result = ask(req.question)
     except Exception as exc:
         logger.exception("Pipeline error")
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail="Something went wrong while answering your question. Please try again.")
 
     citations = [
         CitationOut(
