@@ -25,26 +25,35 @@ from pydantic import BaseModel, Field
 from config import settings
 from query import ask
 from retrieval.vector_store import list_collections
-from ingestion.embedder import encode_query
-from retrieval.reranker import _get_reranker
 from api.chat import router as chat_router
 
 _UI_FILE = Path(__file__).parent.parent / "ui" / "index.html"
 
 
 # ---------------------------------------------------------------------------
-# Lifespan — warm up models before the first request
+# Lifespan
 # ---------------------------------------------------------------------------
+#
+# Deliberately NOT eagerly warming models here. This used to call
+# encode_query("warm up") + _get_reranker() at startup so the first real
+# query wouldn't pay the model-load cost — but that leaves the dense/
+# sparse/reranker models (several hundred MB combined) resident from the
+# moment the container starts, for the container's entire lifetime. On
+# Railway's memory-capped tier that baseline was apparently already close
+# enough to the limit that ingestion's download/parse/chunk/embed work —
+# even with every other fix applied (no subprocess, no forking, no
+# duplicate model copies, sequential parsing) — still crashed the whole
+# container within seconds, every time. Lazy-loading instead (see
+# ingestion/embedder.py's _get_dense()/_get_sparse(), retrieval/reranker.py's
+# _get_reranker(), all cached-singleton) means a fresh deploy has just
+# uvicorn/FastAPI/Python's own footprint until something actually needs a
+# model — giving ingestion real headroom on an otherwise-idle container.
+# The trade-off is a slower first real query (pays the load cost inline);
+# ingestion's own embed step loads them anyway, so any query after a
+# completed ingestion run pays nothing extra.
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    logger.info("Warming up models …")
-    try:
-        encode_query("warm up")
-        _get_reranker()
-        logger.success("Models ready.")
-    except Exception as exc:
-        logger.warning(f"Warm-up failed (non-fatal): {exc}")
     yield
     logger.info("Server shutting down.")
 
