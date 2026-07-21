@@ -8,18 +8,21 @@ Endpoints:
     GET  /health       — server status + loaded collections
     GET  /collections  — list available ticker/year collections
     POST /query        — ask a financial question
+    POST /ingest        — trigger the bundled-12 ingestion pipeline in the background
 """
 
+import threading
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import BackgroundTasks, FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 
+from config import settings
 from query import ask
 from retrieval.vector_store import list_collections
 from ingestion.embedder import encode_query
@@ -116,6 +119,54 @@ def health():
 @app.get("/collections", tags=["meta"])
 def collections():
     return {"collections": list_collections()}
+
+
+# Guards against two ingestion runs overlapping (e.g. a double-click, or a
+# retry while the first request is still running) — the pipeline's own
+# skip-if-already-done checks make repeat calls cheap once data exists, but
+# a genuinely concurrent second run would duplicate download/parse work.
+_ingest_lock = threading.Lock()
+_ingest_running = False
+
+
+def _run_ingestion_background() -> None:
+    global _ingest_running
+    try:
+        import run_ingestion
+        logger.info("Background ingestion started (bundled 12 companies)")
+        run_ingestion.main()
+        logger.success("Background ingestion complete")
+    except Exception:
+        logger.exception("Background ingestion failed")
+    finally:
+        with _ingest_lock:
+            _ingest_running = False
+
+
+@app.post("/ingest", tags=["meta"])
+def ingest(background_tasks: BackgroundTasks, token: Optional[str] = Query(None)):
+    """
+    Trigger the bundled-12-company ingestion pipeline (download → parse →
+    chunk → embed) in the background. Returns immediately — poll /health for
+    collections_loaded to track progress (35 collections when complete).
+    Safe to call repeatedly: already-downloaded/parsed/indexed companies are
+    skipped, so a second call after a partial run just resumes.
+    """
+    if settings.admin_token and token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+
+    global _ingest_running
+    with _ingest_lock:
+        if _ingest_running:
+            return {"status": "already running", "collections_loaded": len(list_collections())}
+        _ingest_running = True
+
+    background_tasks.add_task(_run_ingestion_background)
+    return {
+        "status": "started",
+        "collections_loaded_now": len(list_collections()),
+        "note": "poll GET /health — expect 35 collections when done",
+    }
 
 
 @app.post("/query", response_model=QueryResponse, tags=["rag"])

@@ -34,6 +34,11 @@ class Settings(BaseSettings):
     groq_api: str
     edgar_email: str
 
+    # Optional shared secret for POST /ingest (api/app.py). If unset, the
+    # endpoint is open — fine for a low-stakes deploy, but set this via an
+    # env var on any deployment reachable by more than just you.
+    admin_token: Optional[str] = None
+
     # Paths
     data_dir:       Path = BASE_DIR / "data"
     raw_dir:        Path = BASE_DIR / "data" / "raw"
