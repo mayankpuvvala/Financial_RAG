@@ -1,3 +1,4 @@
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -72,5 +73,17 @@ class Settings(BaseSettings):
     # Groq models
     generation_model: str = "llama-3.3-70b-versatile"
     routing_model:    str = "llama-3.1-8b-instant"
+
+    # Dashboard env-var inputs (Railway, Render, ...) commonly end up with a
+    # trailing newline or extra whitespace from copy-paste — invisible in the
+    # UI, but any of these get embedded directly in an HTTP header (User-
+    # Agent for SEC EDGAR, Authorization for Groq), and a bare "\n" in a
+    # header value is rejected outright by the HTTP client with an opaque
+    # InvalidHeader error. Strip defensively at the source instead of
+    # depending on every caller/platform to paste cleanly.
+    @field_validator("groq_api", "edgar_email", "admin_token", mode="after")
+    @classmethod
+    def _strip_whitespace(cls, v):
+        return v.strip() if isinstance(v, str) else v
 
 settings = Settings()  # pyright: ignore[reportCallIssue]
