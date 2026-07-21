@@ -13,24 +13,16 @@ Steps:
 Flags:
     --skip-download   reuse existing manifest (already downloaded)
     --skip-index      skip embedding / Qdrant step (parse + chunk only)
-    --isolated        embed to disk artifacts instead of writing to Qdrant
-                       directly — for running as a subprocess alongside a
-                       live API server that already holds the Qdrant lock.
-                       See ingestion/embedder.py's embed_chunks_to_artifacts().
 """
 
 import sys
-from pathlib import Path
 from loguru import logger
 
 # config is lightweight — always safe to import at the top
 from config import settings, COMPANIES
 
-PENDING_INDEX_DIR = settings.data_dir / "pending_index"
-SKIP_COLLECTIONS_FILE = PENDING_INDEX_DIR / "_skip_collections.json"
 
-
-def main(skip_download: bool = False, skip_index: bool = False, isolated: bool = False) -> None:
+def main(skip_download: bool = False, skip_index: bool = False) -> None:
 
     # ------------------------------------------------------------------
     # Lazy imports — heavy ML packages are only loaded when their step
@@ -103,19 +95,10 @@ def main(skip_download: bool = False, skip_index: bool = False, isolated: bool =
     # Step 4 — Embed + Index  (skipped if --skip-index)
     # ------------------------------------------------------------------
     if not skip_index:
-        if isolated:
-            import json
-            from ingestion.embedder import embed_chunks_to_artifacts
-            skip_collections = set()
-            if SKIP_COLLECTIONS_FILE.exists():
-                skip_collections = set(json.loads(SKIP_COLLECTIONS_FILE.read_text(encoding="utf-8")))
-            logger.info(f"Embedding to disk artifacts ({len(skip_collections)} collection(s) already indexed) …")
-            embed_chunks_to_artifacts(chunks, PENDING_INDEX_DIR, skip_collections)
-        else:
-            # Import here so missing ML packages don't break steps 1-3
-            from ingestion.embedder import index_chunks
-            logger.info("Embedding and indexing into Qdrant …")
-            index_chunks(chunks)
+        # Import here so missing ML packages don't break steps 1-3
+        from ingestion.embedder import index_chunks
+        logger.info("Embedding and indexing into Qdrant …")
+        index_chunks(chunks)
     else:
         logger.info("Skipping Qdrant indexing (--skip-index)")
 
@@ -145,7 +128,5 @@ if __name__ == "__main__":
                     help="Skip EDGAR download; use existing manifest")
     ap.add_argument("--skip-index", action="store_true",
                     help="Skip embedding / Qdrant indexing")
-    ap.add_argument("--isolated", action="store_true",
-                    help="Embed to disk artifacts instead of writing to Qdrant directly")
     args = ap.parse_args()
-    main(skip_download=args.skip_download, skip_index=args.skip_index, isolated=args.isolated)
+    main(skip_download=args.skip_download, skip_index=args.skip_index)

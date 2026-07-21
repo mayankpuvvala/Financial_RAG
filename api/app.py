@@ -121,19 +121,24 @@ def collections():
     return {"collections": list_collections()}
 
 
-# Ingestion runs as a genuinely separate OS PROCESS (subprocess.Popen), not
-# just a background thread in this process. Running the full bundled-12
-# pipeline (download + parse + chunk + embed thousands of chunks) in-process
-# took the whole API server down with it on Railway's memory-capped tier —
-# once downloads actually started succeeding (see the edgar_email whitespace
-# fix), the pipeline did real work for the first time and the process was
-# OOM-killed mid-run, which also killed the health endpoint, which looked
-# from the outside like the app had simply disappeared for 10+ minutes. A
-# subprocess crash only ends the subprocess: the API keeps serving /health
-# and everything else throughout, and a failure is visible as a captured
-# exit code instead of total silence. Output is tailed into a bounded buffer
-# since there's no shell/log access on a host like Railway without the CLI
-# set up — this is the only way to see what happened.
+# Download/parse/chunk run as a genuinely separate OS PROCESS
+# (subprocess.Popen), not a background thread in this process, because that
+# step is where most exceptions and heavy CPU/memory use come from (lxml
+# parsing dozens of large filings) and a crash there should never take the
+# API down with it. Embedding + the Qdrant write happen back in THIS
+# process afterward, reusing the dense/sparse/reranker models already
+# warmed at startup (see lifespan()) instead of loading a second copy —
+# local Qdrant also holds an exclusive per-process file lock, so a separate
+# embed+index subprocess could never open it anyway (this process already
+# holds it). Two things learned the hard way getting here: (1) running the
+# whole pipeline in-process took the whole API server down when downloads
+# started actually succeeding and the pipeline did real work for the first
+# time — a subprocess crash only ends the subprocess, so /health keeps
+# responding throughout; (2) a container's memory limit is per-container,
+# not per-process, so a subprocess loading its OWN copy of the embedding
+# models on top of this process's already-warm copies was enough to exceed
+# it before a single chunk was even processed — hence embedding is done
+# here, reusing what's already loaded, rather than in the subprocess.
 _ingest_lock = threading.Lock()
 _ingest_running = False
 _ingest_process: Optional[object] = None
@@ -144,40 +149,17 @@ _INGEST_TAIL_MAXLEN = 200
 
 def _run_ingestion_subprocess() -> None:
     global _ingest_running, _ingest_process, _ingest_tail, _ingest_exit_code
-    import gc
-    import json
     import subprocess
     import sys
 
-    from ingestion.embedder import flush_pending_artifacts, unload_models
-    from retrieval.reranker import unload_reranker
+    from ingestion.chunker import load_chunks
+    from ingestion.embedder import index_chunks
 
     _ingest_tail = []
     _ingest_exit_code = None
     try:
-        # Free this process's own embedding/reranker models before the
-        # subprocess loads its own copies — see unload_models()'s docstring.
-        # On a memory-capped container this is the difference between the
-        # subprocess actually getting to run and an immediate OOM kill.
-        unload_models()
-        unload_reranker()
-        gc.collect()
-
-        # Local Qdrant holds an exclusive per-process file lock — this API
-        # server already has it, so the subprocess can never open Qdrant
-        # itself. Tell it (via a plain file, no lock needed) which
-        # collections already exist so it can skip them, and have it embed
-        # to disk artifacts instead of writing to Qdrant directly. This
-        # process — which already holds the lock — flushes those artifacts
-        # into Qdrant afterward (see embedder.py's embed_chunks_to_artifacts
-        # / flush_pending_artifacts split).
-        pending_dir = Path(settings.data_dir) / "pending_index"
-        pending_dir.mkdir(parents=True, exist_ok=True)
-        skip_file = pending_dir / "_skip_collections.json"
-        skip_file.write_text(json.dumps(list_collections()), encoding="utf-8")
-
         proc = subprocess.Popen(
-            [sys.executable, "run_ingestion.py", "--isolated"],
+            [sys.executable, "run_ingestion.py", "--skip-index"],
             cwd=str(Path(__file__).parent.parent),
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -192,15 +174,18 @@ def _run_ingestion_subprocess() -> None:
         proc.wait()
         _ingest_exit_code = proc.returncode
         if proc.returncode == 0:
-            logger.success("Ingestion subprocess completed — flushing artifacts into Qdrant")
-            flushed = flush_pending_artifacts(pending_dir)
-            _ingest_tail.append(f"[flush] {flushed} collection(s) written to Qdrant")
-            logger.success(f"Flushed {flushed} collection(s) into Qdrant")
+            logger.success("Download/parse/chunk subprocess completed — embedding + indexing here")
+            chunks = load_chunks(settings.chunks_dir)
+            before = len(list_collections())
+            index_chunks(chunks)
+            after = len(list_collections())
+            _ingest_tail.append(f"[index] {after - before} new collection(s) indexed ({after} total)")
+            logger.success(f"Indexed {after - before} new collection(s) ({after} total)")
         else:
             logger.error(f"Ingestion subprocess exited with code {proc.returncode}")
     except Exception as exc:
         _ingest_tail.append(f"[launcher error] {type(exc).__name__}: {exc}")
-        logger.exception("Failed to launch ingestion subprocess")
+        logger.exception("Ingestion failed")
     finally:
         _ingest_process = None
         with _ingest_lock:

@@ -75,11 +75,6 @@ def _get_reranker() -> TextCrossEncoder:
     )
 
 
-def unload_reranker() -> None:
-    """Drop the cached reranker — see ingestion/embedder.py::unload_models()."""
-    _get_reranker.cache_clear()
-
-
 def rerank(
     query:      str,
     candidates: List[Dict],

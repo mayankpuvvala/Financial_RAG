@@ -5,10 +5,8 @@ Dense  : BAAI/bge-large-en-v1.5  via fastembed.TextEmbedding
 Sparse : Qdrant/bm25              via fastembed.SparseTextEmbedding
 """
 
-import pickle
 from collections import defaultdict
-from pathlib import Path
-from typing import List, Optional, Set, Tuple
+from typing import List, Optional, Tuple
 
 import numpy as np
 from fastembed import TextEmbedding, SparseTextEmbedding
@@ -99,22 +97,6 @@ def encode_sparse(
     return [(e.indices.tolist(), e.values.tolist()) for e in model.embed(texts, batch_size=batch_size)]
 
 
-def unload_models() -> None:
-    """
-    Drop the cached dense/sparse models so their memory (~450-650MB each,
-    see _get_dense()) can be reclaimed. Used right before spawning the
-    ingestion subprocess: on a memory-capped container, the API process's
-    already-warm models plus the subprocess loading its own copies to embed
-    can exceed the container's total memory even before any chunk is
-    processed — a cgroup-level OOM kill doesn't respect process boundaries,
-    so isolating ingestion into a subprocess doesn't help if both processes'
-    peak memory is held at the same time. The next query lazily reloads them.
-    """
-    global _dense_model, _sparse_model
-    _dense_model = None
-    _sparse_model = None
-
-
 def encode_query(text: str) -> Tuple[List[float], List[int], List[float]]:
     dense  = encode_dense([text], is_query=True)[0]
     sparse = encode_sparse([text])[0]
@@ -171,108 +153,3 @@ def index_chunks(
         offset += n
 
     logger.success(f"Done. Collections: {list_collections()}")
-
-
-# ---------------------------------------------------------------------------
-# Isolated-process variant
-# ---------------------------------------------------------------------------
-#
-# Local (embedded, file-based) Qdrant takes an EXCLUSIVE lock on its storage
-# folder per OS process — only one process can ever hold it. When ingestion
-# runs as a separate subprocess (to protect the API server from an OOM crash
-# during the heavy parse/embed work), that subprocess can never open Qdrant
-# itself: the API server already holds the lock for the lifetime of its
-# process. So the split here is: the subprocess computes embeddings (the part
-# that actually needs isolating) and writes them to disk as plain pickles;
-# the API server process — which already holds the lock — picks them up and
-# does the actual (cheap, fast) Qdrant write via flush_pending_artifacts().
-
-def embed_chunks_to_artifacts(
-    chunks:            List[Chunk],
-    artifacts_dir:     Path,
-    skip_collections:  Set[str],
-    batch_size:        int = settings.embedding_batch_size,
-) -> int:
-    """
-    Compute embeddings and write one pickle per collection to *artifacts_dir*,
-    without touching Qdrant. Collections already present in *skip_collections*
-    are skipped (the caller supplies this since collection_exists() would
-    require the Qdrant lock this process doesn't have). Returns the number of
-    artifact files written.
-    """
-    artifacts_dir.mkdir(parents=True, exist_ok=True)
-
-    grouped: dict = defaultdict(list)
-    for chunk in chunks:
-        grouped[get_collection_name(chunk.ticker, chunk.fiscal_year)].append(chunk)
-
-    needs_indexing = [
-        (name, col_chunks) for name, col_chunks in sorted(grouped.items())
-        if name not in skip_collections
-    ]
-
-    if not needs_indexing:
-        logger.success("No new collections to embed.")
-        return 0
-
-    _get_dense()
-    _get_sparse()
-
-    all_texts = [c.text for _, col_chunks in needs_indexing for c in col_chunks]
-    logger.info(f"Embedding {len(all_texts)} chunks in one batch (batch_size={batch_size}) …")
-    all_dense  = encode_dense(all_texts,  batch_size=batch_size)
-    all_sparse = encode_sparse(all_texts, batch_size=batch_size)
-
-    offset = 0
-    written = 0
-    for col_name, col_chunks in needs_indexing:
-        n = len(col_chunks)
-        artifact_path = artifacts_dir / f"{col_name}.pkl"
-        with artifact_path.open("wb") as fh:
-            pickle.dump(
-                {
-                    "collection_name": col_name,
-                    "chunks":          col_chunks,
-                    "dense_vectors":   all_dense[offset : offset + n],
-                    "sparse_vectors":  all_sparse[offset : offset + n],
-                },
-                fh,
-            )
-        logger.success(f"Embedded → {artifact_path.name}  ({n} points)")
-        offset += n
-        written += 1
-
-    return written
-
-
-def flush_pending_artifacts(artifacts_dir: Path) -> int:
-    """
-    Read every *.pkl in *artifacts_dir* (written by embed_chunks_to_artifacts)
-    and upsert it into Qdrant. Must run in a process that already holds the
-    Qdrant lock (the API server). Deletes each artifact after a successful
-    upsert. Returns the number of collections flushed.
-    """
-    if not artifacts_dir.exists():
-        return 0
-
-    flushed = 0
-    for artifact_path in sorted(artifacts_dir.glob("*.pkl")):
-        with artifact_path.open("rb") as fh:
-            data = pickle.load(fh)
-
-        col_name = data["collection_name"]
-        if not collection_exists(col_name):
-            create_collection(col_name)
-
-        upsert_chunks(
-            collection_name=col_name,
-            chunks=data["chunks"],
-            dense_vectors=data["dense_vectors"],
-            sparse_vectors=data["sparse_vectors"],
-            batch_size=64,
-        )
-        logger.success(f"Flushed → {col_name}  ({len(data['chunks'])} points)")
-        artifact_path.unlink()
-        flushed += 1
-
-    return flushed
