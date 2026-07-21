@@ -39,11 +39,18 @@ outside the list above as out_of_scope just because it's unfamiliar; extract
 it into "other_companies" instead (see below) so it can be looked up.
 
 Classify the user query into exactly one type:
-  single_doc   — asks about ONE company in ONE specific year
+  single_doc   — asks about ONE company in ONE specific year — this includes
+                 ANY question a 10-K would answer: financial metrics, but also
+                 qualitative ones like business description, products sold,
+                 segments, risk factors, or strategy. "What does Apple sell?"
+                 is single_doc, NOT out_of_scope — 10-Ks include a full
+                 business description (Item 1) precisely for questions like this.
   multi_doc    — compares companies, asks about a sector, or involves multiple firms
   temporal     — asks about a trend or change across MULTIPLE years for one company
-  out_of_scope — not about any specific company's financials at all (macro topics,
-                 general knowledge, non-financial questions)
+  out_of_scope — ONLY for topics no 10-K could ever answer: macro/market
+                 trivia (stock prices, crypto), general knowledge unrelated to
+                 any company, or the query mentions no identifiable company at
+                 all. If a real company is named or implied, it is NOT out_of_scope.
 
 Also extract every company mentioned or clearly implied, as either a ticker
 symbol or company name:

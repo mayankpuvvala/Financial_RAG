@@ -65,5 +65,3 @@ class QueryResult(BaseModel):
     citations: List[dict]
     chunks_used: List[RetrievedChunk]
     query_type: str
-    faithfulness_score: Optional[float] = None
-    relevance_score: Optional[float] = None

@@ -37,4 +37,7 @@ EXPOSE 8000
 
 # Warm-up (model download + load) happens on first startup via api/app.py's
 # lifespan handler, so the first request after a cold start is slower.
-CMD ["uvicorn", "api.app:app", "--host", "0.0.0.0", "--port", "8000"]
+#
+# Binds to $PORT when the platform sets one (Railway, Render, Heroku, …),
+# falling back to 8000 for local `docker run`. Shell form so $PORT expands.
+CMD uvicorn api.app:app --host 0.0.0.0 --port ${PORT:-8000}

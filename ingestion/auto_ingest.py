@@ -10,16 +10,26 @@ of being limited to the pre-ingested set. Kept fast by:
     duplicate the download/parse/embed work
   - an in-memory "already tried and failed" cache so a bad ticker mention
     doesn't re-hit SEC EDGAR on every message in a chat session
+  - PRIORITIZED indexing: embedding is the slow part on CPU-only hardware
+    (roughly linear in total tokens embedded — smaller chunks don't help,
+    a smaller model would but at a quality cost). Most first questions about
+    a new company are about revenue/margins/risk/segments, so we embed the
+    chunks from the sections that answer those (financial statements, MD&A,
+    risk factors, business overview) FIRST and return as soon as THAT
+    subset is searchable. Every other section keeps embedding in a
+    background thread so later, more specific questions eventually have
+    full coverage too — without the first question waiting for all of it.
 
-One-time cost is a few minutes on CPU-only hardware (dominated by embedding
-the new filing's chunks — a typical 10-K is 100-300 chunks), but every
-subsequent question about that company is instant, same as the bundled 12,
-because the result is persisted to disk/Qdrant exactly like they are.
+One-time cost for the prioritized subset is well under a minute for a
+typical 10-K; the remaining sections finish over the following minutes in
+the background. Every subsequent question about that company is instant,
+same as the bundled 12, because the result is persisted to disk/Qdrant
+exactly like they are.
 """
 
 import threading
 import time
-from typing import Dict, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -28,6 +38,7 @@ from ingestion.downloader import download_all_filings
 from ingestion.parser import parse_all_filings
 from ingestion.chunker import chunk_all_documents
 from ingestion.embedder import index_chunks
+from models import Chunk
 from retrieval.vector_store import list_collections
 from retrieval.parent_store import parent_store
 
@@ -35,6 +46,31 @@ _locks:       Dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 _failed:      Dict[str, float]          = {}   # ticker -> time.time() of last failure
 _FAIL_TTL     = 300  # don't retry a failed ticker for 5 minutes
+
+# Section-title keywords covering the questions people actually ask first:
+# revenue/margins/net income (financial statements), outlook (MD&A), risk,
+# and general business/segment info. Matched against chunk.section_name,
+# which is always parser.py's clean display title (never the disambiguated
+# internal section_id), so this works regardless of how many segments a
+# filing was split across.
+_PRIORITY_SECTION_KEYWORDS = (
+    "risk factors", "md&a", "management's discussion", "business",
+    "income", "balance sheet", "cash flow", "equity", "financial statements",
+)
+# Below this many chunks, splitting isn't worth the complexity — just index
+# everything in one synchronous pass.
+_MIN_CHUNKS_TO_SPLIT = 40
+
+
+def _split_by_priority(chunks: List[Chunk]) -> Tuple[List[Chunk], List[Chunk]]:
+    priority, remaining = [], []
+    for c in chunks:
+        name = c.section_name.lower()
+        if any(k in name for k in _PRIORITY_SECTION_KEYWORDS):
+            priority.append(c)
+        else:
+            remaining.append(c)
+    return priority, remaining
 
 
 def _lock_for(ticker: str) -> threading.Lock:
@@ -99,16 +135,47 @@ def ensure_ticker_indexed(ticker: str, company_name: str) -> Optional[Tuple[str,
                 _failed[ticker] = time.time()
                 return None
             chunks = chunk_all_documents(documents, settings.chunks_dir)
-            index_chunks(chunks)
-            parent_store.reload()
+            parent_store.reload()   # parsed doc text is ready regardless of embed progress
         except Exception as exc:
-            logger.error(f"Auto-ingest parse/chunk/index failed for {ticker}: {exc}")
+            logger.error(f"Auto-ingest parse/chunk failed for {ticker}: {exc}")
             _failed[ticker] = time.time()
             return None
 
         doc = documents[0]
+
+        priority, remaining = _split_by_priority(chunks)
+        if not priority or len(chunks) < _MIN_CHUNKS_TO_SPLIT:
+            priority, remaining = chunks, []
+
+        try:
+            index_chunks(priority)
+        except Exception as exc:
+            logger.error(f"Auto-ingest embedding failed for {ticker}: {exc}")
+            _failed[ticker] = time.time()
+            return None
+
         logger.success(
-            f"Auto-ingest complete: {ticker} FY{doc.fiscal_year} ready ({len(chunks)} chunks)"
+            f"Auto-ingest ready: {ticker} FY{doc.fiscal_year} — "
+            f"{len(priority)} priority chunks searchable now"
+            + (f", {len(remaining)} more indexing in the background" if remaining else "")
         )
+
+        if remaining:
+            def _finish_background() -> None:
+                try:
+                    index_chunks(remaining, force_reindex=True)
+                    logger.success(
+                        f"Auto-ingest background completion done for {ticker}: "
+                        f"{len(remaining)} additional chunks now searchable"
+                    )
+                except Exception as exc:
+                    logger.error(f"Auto-ingest background completion failed for {ticker}: {exc}")
+
+            threading.Thread(
+                target=_finish_background,
+                name=f"auto-ingest-finish-{ticker}",
+                daemon=False,
+            ).start()
+
         _failed.pop(ticker, None)
         return doc.company, doc.fiscal_year

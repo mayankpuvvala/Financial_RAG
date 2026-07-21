@@ -30,6 +30,14 @@ from retrieval.vector_store import (
 from retrieval.reranker import rerank
 from retrieval.parent_store import parent_store
 
+# Casual "what does X sell/make" phrasing has poor lexical/semantic overlap
+# with the Business section's formal wording, so it needs both a guaranteed
+# scroll-based candidate pass (step 2d) and a rerank boost (step 4b).
+_BUSINESS_OVERVIEW_KEYWORDS = (
+    "sell", "sells", "product", "products", "core business", "business model",
+    "what industries", "main business", "primary business",
+)
+
 
 def _target_collections(
     tickers: List[str],
@@ -79,6 +87,7 @@ def retrieve(
 
     # --- 1. Encode query ---
     dense, sparse_idx, sparse_val = encode_query(query)
+    _is_business_query = any(k in query.lower() for k in _BUSINESS_OVERVIEW_KEYWORDS)
 
     # --- 2. Hybrid search across all target collections ---
     # Run two passes per collection:
@@ -114,6 +123,16 @@ def retrieve(
         #    local Qdrant. Use scroll-based lookup instead.
         stmt_hits = scroll_by_section(col, "Consolidated Statements of Income", limit=5)
         raw_results.extend(stmt_hits)
+
+        # d) Business-overview queries ("nvidia sells what?") have poor
+        #    lexical/semantic overlap with the Business section's formal
+        #    wording ("designs, manufactures and markets"), so hybrid search
+        #    alone often doesn't surface it at all. Guarantee it's in the
+        #    candidate pool with a scroll-based pass; the reranker + boost
+        #    below (step 4b) then decide whether it actually wins.
+        if _is_business_query:
+            biz_hits = scroll_by_section(col, "Item 1: Business", limit=5)
+            raw_results.extend(biz_hits)
 
     if not raw_results:
         logger.warning("Hybrid search returned no results")
@@ -215,6 +234,16 @@ def retrieve(
                 r["rerank_score"] = _score(r) + 2.0
             elif "operating income" in tl or "income from operations" in tl:
                 r["rerank_score"] = _score(r) + 0.5
+
+    # Business overview / "what does X sell or make" — casual phrasing like
+    # "nvidia sells what?" has poor lexical overlap with the Business section's
+    # own wording ("designs, manufactures"), so the cross-encoder alone tends
+    # to rank financial-statement tables above it. Boost Item 1: Business text
+    # chunks so the actual product/segment description wins.
+    elif _is_business_query:
+        for r in reranked:
+            if "item 1: business" in _section(r) and r["payload"].get("chunk_type") == "text":
+                r["rerank_score"] = _score(r) + 8.0
 
     reranked = sorted(reranked, key=lambda x: x.get("rerank_score", x["score"]), reverse=True)
 

@@ -272,6 +272,7 @@ def _select_and_validate(
     lines: List[str],
     all_occurrences: Dict[str, List[Tuple[int, str, str]]],
     sentinel_hits: Dict[str, Tuple[int, str, str]],
+    skip_start: int,
     skip_end: int,
 ) -> List[Tuple[int, str, str]]:
     """
@@ -367,16 +368,27 @@ def _select_and_validate(
             validated.extend(recovered)
             validated.sort(key=lambda x: x[0])
 
+    # --- Recovery pass for Item 1: Business ------------------------------
+    # It's almost always the very first substantive heading right after the
+    # cover page, which commonly lands it INSIDE the 15% TOC-skip window
+    # that every other item_* section relies on to avoid TOC/cover-page
+    # false positives. Recover it by scanning exactly that excluded window;
+    # take the LAST match there (TOC entries like a bare "Item 1." appear
+    # first, the real "Item 1. Business" heading follows shortly after).
+    if "item_1_business" not in {e[1] for e in validated} and skip_start > 0:
+        toc_zone_hits: List[Tuple[int, str, str]] = []
+        for i in range(skip_start):
+            stripped = lines[i].strip()
+            if not stripped or len(stripped) > 250:
+                continue
+            match = _match_section(stripped)
+            if match and match[0] == "item_1_business":
+                toc_zone_hits.append((i, match[0], match[1]))
+        if toc_zone_hits:
+            validated.append(toc_zone_hits[-1])
+            validated.sort(key=lambda x: x[0])
+
     return validated
-
-
-def _find_section_boundaries(lines: List[str]) -> List[Tuple[int, str, str]]:
-    """Single-document convenience wrapper around collect + select/validate."""
-    total      = len(lines)
-    skip_start = int(total * 0.15)
-    skip_end   = int(total * 0.97)
-    all_occurrences, sentinel_hits = _collect_occurrences(lines, skip_start, skip_end)
-    return _select_and_validate(lines, all_occurrences, sentinel_hits, skip_end)
 
 
 # ---------------------------------------------------------------------------
@@ -456,7 +468,7 @@ def _build_section(
 # ---------------------------------------------------------------------------
 
 # Sentinel prefix written into the soup before table extraction so that
-# _find_section_boundaries can pick up the section_id from plain text.
+# _collect_occurrences can pick up the section_id from plain text.
 _FS_SENTINEL_PREFIX = "FS_SECTION_HEADER:"
 
 
@@ -557,7 +569,7 @@ def parse_filing(
             seg_lines, seg_skip_start, seg_skip_end
         )
         seg_boundaries = _select_and_validate(
-            seg_lines, seg_occurrences, seg_sentinels, seg_skip_end
+            seg_lines, seg_occurrences, seg_sentinels, seg_skip_start, seg_skip_end
         )
 
         offset = len(lines)

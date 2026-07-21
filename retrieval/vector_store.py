@@ -228,19 +228,3 @@ def scroll_by_section(
             break
 
     return results
-
-
-def search_single_vector(
-    collection_name: str,
-    query_dense: List[float],
-    top_k: int = settings.retrieval_top_k,
-) -> List[Dict]:
-    """Dense-only fallback search (used when sparse fails or for debugging)."""
-    client = get_client()
-    results = client.search(
-        collection_name=collection_name,
-        query_vector=("dense", query_dense),
-        limit=top_k,
-        with_payload=True,
-    )
-    return [{"id": str(r.id), "score": r.score, "payload": r.payload} for r in results]
