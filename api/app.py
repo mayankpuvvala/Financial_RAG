@@ -121,38 +121,6 @@ def collections():
     return {"collections": list_collections()}
 
 
-@app.get("/ingest/debug-download", tags=["meta"])
-def ingest_debug_download():
-    """
-    Synchronously attempt a single-company, single-filing SEC EDGAR download
-    and return the raw outcome/exception. ingestion/downloader.py catches
-    per-ticker download exceptions and just returns [] — correct for not
-    letting one bad ticker abort a 12-company run, but it also means a
-    total download failure (e.g. network/EDGAR blocking a host's egress)
-    completes "successfully" with zero records and no visible error. This
-    bypasses that swallowing to surface exactly what SEC EDGAR/network says.
-    """
-    import traceback
-    from sec_edgar_downloader import Downloader
-
-    result: dict = {}
-    try:
-        dl = Downloader(
-            company_name="FinancialRAG",
-            email_address=settings.edgar_email,
-            download_folder=str(settings.raw_dir),
-        )
-        dl.get("10-K", "AAPL", limit=1)
-        result["status"] = "success"
-    except Exception as exc:
-        result["status"] = "failed"
-        result["exception_type"] = type(exc).__name__
-        result["exception_message"] = str(exc)
-        result["traceback"] = traceback.format_exc()
-
-    return result
-
-
 # Guards against two ingestion runs overlapping (e.g. a double-click, or a
 # retry while the first request is still running) — the pipeline's own
 # skip-if-already-done checks make repeat calls cheap once data exists, but
