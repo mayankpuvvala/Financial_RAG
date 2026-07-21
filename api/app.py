@@ -144,15 +144,25 @@ _INGEST_TAIL_MAXLEN = 200
 
 def _run_ingestion_subprocess() -> None:
     global _ingest_running, _ingest_process, _ingest_tail, _ingest_exit_code
+    import gc
     import json
     import subprocess
     import sys
 
-    from ingestion.embedder import flush_pending_artifacts
+    from ingestion.embedder import flush_pending_artifacts, unload_models
+    from retrieval.reranker import unload_reranker
 
     _ingest_tail = []
     _ingest_exit_code = None
     try:
+        # Free this process's own embedding/reranker models before the
+        # subprocess loads its own copies — see unload_models()'s docstring.
+        # On a memory-capped container this is the difference between the
+        # subprocess actually getting to run and an immediate OOM kill.
+        unload_models()
+        unload_reranker()
+        gc.collect()
+
         # Local Qdrant holds an exclusive per-process file lock — this API
         # server already has it, so the subprocess can never open Qdrant
         # itself. Tell it (via a plain file, no lock needed) which

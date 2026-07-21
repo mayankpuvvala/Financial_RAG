@@ -99,6 +99,22 @@ def encode_sparse(
     return [(e.indices.tolist(), e.values.tolist()) for e in model.embed(texts, batch_size=batch_size)]
 
 
+def unload_models() -> None:
+    """
+    Drop the cached dense/sparse models so their memory (~450-650MB each,
+    see _get_dense()) can be reclaimed. Used right before spawning the
+    ingestion subprocess: on a memory-capped container, the API process's
+    already-warm models plus the subprocess loading its own copies to embed
+    can exceed the container's total memory even before any chunk is
+    processed — a cgroup-level OOM kill doesn't respect process boundaries,
+    so isolating ingestion into a subprocess doesn't help if both processes'
+    peak memory is held at the same time. The next query lazily reloads them.
+    """
+    global _dense_model, _sparse_model
+    _dense_model = None
+    _sparse_model = None
+
+
 def encode_query(text: str) -> Tuple[List[float], List[int], List[float]]:
     dense  = encode_dense([text], is_query=True)[0]
     sparse = encode_sparse([text])[0]
