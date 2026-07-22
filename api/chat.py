@@ -165,7 +165,7 @@ def chat(req: ChatRequest):
         result = _run_pipeline(question, req.tickers, req.years)
     except Exception as exc:
         logger.exception("Chat pipeline error")
-        raise HTTPException(500, str(exc))
+        raise HTTPException(500, "Something went wrong while answering your question. Please try again.")
 
     tid = str(uuid.uuid4())
     with _conn() as con:

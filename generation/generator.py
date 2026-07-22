@@ -7,11 +7,12 @@ Flow:
   3. Return answer + structured citation list
 """
 
+import time
 from functools import lru_cache
 from typing import List, Optional
 
 import tiktoken
-from groq import Groq
+from groq import Groq, RateLimitError, APIConnectionError, APITimeoutError, APIStatusError
 from loguru import logger
 
 from config import settings
@@ -129,6 +130,38 @@ def _get_client() -> Groq:
     return Groq(api_key=settings.groq_api)
 
 
+def _call_generation(user_message: str, retries: int = 2, backoff: float = 1.5) -> str:
+    """
+    Call Groq for the final answer, retrying transient errors (connection
+    blips, 5xx) a couple of times with short backoff. Rate-limit errors are
+    NOT retried — the daily/per-minute quota won't clear in seconds, so this
+    fails fast and lets the caller degrade gracefully instead of stalling.
+    """
+    last_exc: Exception = None
+    for attempt in range(retries + 1):
+        try:
+            response = _get_client().chat.completions.create(
+                model=settings.generation_model,
+                messages=[
+                    {"role": "system", "content": SYSTEM_PROMPT},
+                    {"role": "user",   "content": user_message},
+                ],
+                temperature=0.1,
+                max_tokens=512,
+            )
+            return response.choices[0].message.content.strip()
+        except RateLimitError:
+            raise
+        except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
+            last_exc = exc
+            if attempt < retries:
+                logger.warning(f"Groq call failed (attempt {attempt + 1}/{retries + 1}): {exc}")
+                time.sleep(backoff * (attempt + 1))
+                continue
+            raise
+    raise last_exc
+
+
 def generate_answer(
     query:      str,
     retrieved:  List[RetrievedChunk],
@@ -156,17 +189,33 @@ def generate_answer(
 
     logger.debug(f"Calling Groq ({settings.generation_model}) for: '{query[:60]}'")
 
-    response = _get_client().chat.completions.create(
-        model=settings.generation_model,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user",   "content": user_message},
-        ],
-        temperature=0.1,
-        max_tokens=512,
-    )
-
-    answer = response.choices[0].message.content.strip()
+    try:
+        answer = _call_generation(user_message)
+    except RateLimitError as exc:
+        logger.warning(f"Groq rate limit hit during generation: {exc}")
+        return QueryResult(
+            query=query,
+            answer=(
+                "I found relevant source material below, but the answer-generation "
+                "service has hit its usage limit and can't write a summary right now. "
+                "Please try again in a few minutes."
+            ),
+            citations=citations,
+            chunks_used=retrieved,
+            query_type=query_type,
+        )
+    except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
+        logger.error(f"Groq generation call failed after retries: {exc}")
+        return QueryResult(
+            query=query,
+            answer=(
+                "I found relevant source material below, but the answer-generation "
+                "service is temporarily unavailable. Please try again shortly."
+            ),
+            citations=citations,
+            chunks_used=retrieved,
+            query_type=query_type,
+        )
 
     logger.debug(f"Answer ({len(answer)} chars), {len(citations)} citations")
 

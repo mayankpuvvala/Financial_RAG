@@ -8,12 +8,18 @@ from a single collection.
 
 import json
 import re
+from functools import lru_cache
 from typing import List, Dict
 
 from groq import Groq
 from loguru import logger
 
 from config import settings
+
+
+@lru_cache(maxsize=1)
+def _get_client() -> Groq:
+    return Groq(api_key=settings.groq_api)
 
 SYSTEM_PROMPT = """\
 You decompose complex financial queries into atomic sub-questions for searching SEC 10-K filings.
@@ -71,8 +77,7 @@ def decompose_query(
     Falls back to a single entry if decomposition fails.
     """
     try:
-        client   = Groq(api_key=settings.groq_api)
-        response = client.chat.completions.create(
+        response = _get_client().chat.completions.create(
             model=settings.routing_model,
             messages=[
                 {"role": "system", "content": SYSTEM_PROMPT},
