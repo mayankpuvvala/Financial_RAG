@@ -121,12 +121,26 @@ def ui():
 
 @app.get("/health", tags=["meta"])
 def health():
-    cols = list_collections()
-    return {
-        "status": "ok",
-        "collections_loaded": len(cols),
-        "collections": cols,
-    }
+    # list_collections() -> get_client() can raise (bounded timeout — see
+    # vector_store.get_client()) if data/qdrant has a corrupted collection.
+    # /health must still respond in that case: it's the one endpoint that
+    # needs to answer regardless of Qdrant's state, both for the platform's
+    # own health checks and for diagnosing exactly this failure remotely.
+    try:
+        cols = list_collections()
+        return {
+            "status": "ok",
+            "collections_loaded": len(cols),
+            "collections": cols,
+        }
+    except Exception as exc:
+        logger.exception("Health check: Qdrant unavailable")
+        return {
+            "status": "degraded",
+            "error": f"{type(exc).__name__}: {exc}",
+            "collections_loaded": 0,
+            "collections": [],
+        }
 
 
 @app.get("/collections", tags=["meta"])
@@ -391,6 +405,50 @@ def restore_data(
         "members_extracted": n,
         "note": "process is restarting now — poll GET /health in ~10-30s for the new collection count",
     }
+
+
+@app.delete("/admin/data-path", tags=["meta"])
+def delete_data_path(
+    background_tasks: BackgroundTasks,
+    path: str = Query(..., description="Path relative to data/, e.g. qdrant/collection/WFC_2023"),
+    token: Optional[str] = Query(None),
+    restart: bool = Query(True, description="Restart the process after deleting (recommended if Qdrant is wedged)"),
+):
+    """
+    Delete a specific file or directory under data/ directly on disk — no
+    QdrantClient involved. Exists for exactly one scenario: a corrupted or
+    partially-written collection (e.g. from an interrupted restore-data
+    extraction) makes get_client() hang past its timeout, which means
+    EVERY endpoint that touches Qdrant — including delete_collection() —
+    hangs too, since they all need a working client first. Operating on
+    the filesystem directly sidesteps that entirely. Defaults to
+    restarting afterward since a wedged in-memory client (if one was ever
+    successfully constructed before the timeout) won't un-wedge itself.
+    """
+    if settings.admin_token and token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+
+    target = (settings.data_dir / path).resolve()
+    data_dir_resolved = settings.data_dir.resolve()
+    if target != data_dir_resolved and data_dir_resolved not in target.parents:
+        raise HTTPException(status_code=400, detail="Path escapes data/ — refusing")
+
+    if not target.exists():
+        raise HTTPException(status_code=404, detail=f"No such path: {path}")
+
+    if target.is_dir():
+        shutil.rmtree(target)
+    else:
+        target.unlink()
+    logger.warning(f"Deleted data path via admin endpoint: {target}")
+
+    if restart:
+        def _restart_soon() -> None:
+            time.sleep(1)
+            os._exit(0)
+        background_tasks.add_task(_restart_soon)
+
+    return {"status": "deleted", "path": path, "restarting": restart}
 
 
 @app.post("/ingest", tags=["meta"])

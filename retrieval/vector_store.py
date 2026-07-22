@@ -9,6 +9,7 @@ Schema per collection (one collection = one ticker + fiscal year):
 Hybrid search uses Qdrant's built-in RRF fusion over prefetch results.
 """
 
+import concurrent.futures
 import os
 import threading
 from typing import Any, Dict, List, Optional, Tuple
@@ -50,6 +51,19 @@ from config import settings
 _client: Optional[QdrantClient] = None
 _client_lock = threading.Lock()
 
+# A corrupted/partially-written collection directory (e.g. an interrupted
+# extraction — see api/app.py's restore-data endpoint) can make
+# QdrantClient(path=...) hang rather than raise: local-mode Qdrant scans
+# every collection at construction time, and a torn-write sqlite file on a
+# network-backed volume can wedge that scan indefinitely instead of failing
+# fast. Without a bound, that hang is fatal for the whole process — every
+# caller serializes on _client_lock waiting for the same stuck construction,
+# so EVERY endpoint (including /health) stops responding, indistinguishable
+# from the process being down. Bounding it means at least one caller gets a
+# clear, fast error instead of the platform's own opaque request timeout.
+_CLIENT_CONSTRUCT_TIMEOUT = 30
+_client_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="qdrant-client-init")
+
 
 def get_client() -> QdrantClient:
     global _client
@@ -57,7 +71,15 @@ def get_client() -> QdrantClient:
         with _client_lock:
             if _client is None:
                 os.makedirs(settings.qdrant_path, exist_ok=True)
-                _client = QdrantClient(path=settings.qdrant_path)
+                future = _client_executor.submit(QdrantClient, path=settings.qdrant_path)
+                try:
+                    _client = future.result(timeout=_CLIENT_CONSTRUCT_TIMEOUT)
+                except concurrent.futures.TimeoutError:
+                    raise RuntimeError(
+                        f"Qdrant client construction did not complete within "
+                        f"{_CLIENT_CONSTRUCT_TIMEOUT}s — data/qdrant may contain a "
+                        f"corrupted collection (e.g. from an interrupted write)."
+                    )
     return _client
 
 
