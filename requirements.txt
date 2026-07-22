@@ -24,6 +24,7 @@ groq>=0.9.0
 # API layer
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
+python-multipart>=0.0.9   # required by FastAPI's UploadFile/File() (POST /admin/restore-data)
 
 # Evaluation (RAGAS + judge LLM wrappers)
 ragas>=0.2.0
