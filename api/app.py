@@ -310,10 +310,20 @@ def _safe_extract(tar: tarfile.TarFile, dest: Path) -> int:
     stream fully to build the member list and then needs to seek back to
     the start to actually extract; the request's upload stream (mode
     "r|gz") doesn't support that ("seeking backwards is not allowed").
+
+    Skips any qdrant/.lock entry. That file is local-mode Qdrant's own
+    exclusive-lock marker for the CURRENT process's storage handle, not
+    portable data — a naively-built archive (`tar -czf x.tar.gz -C data
+    qdrant parsed`) captures it, and overwriting a lock file this process
+    itself already holds open fails hard on Windows (PermissionError) and
+    is pointless everywhere else (the running process's actual lock isn't
+    affected by replacing the file's bytes anyway).
     """
     dest = dest.resolve()
     count = 0
     for member in tar:
+        if Path(member.name).name == ".lock":
+            continue
         resolved = (dest / member.name).resolve()
         if resolved != dest and dest not in resolved.parents:
             raise ValueError(f"Refusing unsafe archive member: {member.name!r}")
