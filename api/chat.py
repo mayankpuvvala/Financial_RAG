@@ -39,7 +39,17 @@ settings.data_dir.mkdir(parents=True, exist_ok=True)
 def _conn():
     con = sqlite3.connect(str(DB_PATH), check_same_thread=False)
     con.row_factory = sqlite3.Row
-    con.execute("PRAGMA journal_mode=WAL")
+    # WAL needs shared-memory-mapped -wal/-shm files with specific locking
+    # semantics that some network/bind-mounted volumes (observed on Railway)
+    # don't support, raising "disk I/O error" — which, unguarded, crashed
+    # this at IMPORT time and took the entire API down with it (every
+    # route, not just chat), since api/app.py imports this module directly.
+    # Fall back to SQLite's plain default (rollback-journal) mode, which
+    # needs no auxiliary files, instead of letting that exception propagate.
+    try:
+        con.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError as exc:
+        logger.warning(f"WAL mode unavailable on this filesystem ({exc}) — using default journal mode")
     con.execute("PRAGMA foreign_keys=ON")
     try:
         yield con
@@ -71,7 +81,16 @@ def _init_db() -> None:
         """)
 
 
-_init_db()
+try:
+    _init_db()
+except Exception:
+    # A broken chat-history DB (this filesystem issue, a corrupted file,
+    # etc.) must not prevent the whole API from starting — /query and the
+    # rest of the RAG pipeline don't depend on chat history at all. Chat
+    # endpoints will fail individually if _conn() still can't connect, but
+    # that's a contained failure instead of the entire process never
+    # coming up.
+    logger.exception("Chat history DB init failed — /chat endpoints may be unavailable, rest of the API is unaffected")
 
 
 # ── Pipeline helper ───────────────────────────────────────────────────────────
