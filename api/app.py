@@ -148,6 +148,31 @@ def collections():
     return {"collections": list_collections()}
 
 
+@app.get("/admin/disk-usage", tags=["meta"])
+def disk_usage(token: Optional[str] = Query(None)):
+    """Remote diagnosis for volume space issues — no CLI/dashboard file browser available."""
+    if settings.admin_token and token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+
+    total, used, free = shutil.disk_usage(settings.data_dir)
+
+    def _dir_size(p: Path) -> int:
+        if not p.exists():
+            return -1
+        return sum(f.stat().st_size for f in p.rglob("*") if f.is_file())
+
+    breakdown = {
+        name: _dir_size(settings.data_dir / name)
+        for name in ("raw", "qdrant", "chunks", "parsed")
+    }
+    return {
+        "volume_total_mb": round(total / 1024 / 1024, 1),
+        "volume_used_mb": round(used / 1024 / 1024, 1),
+        "volume_free_mb": round(free / 1024 / 1024, 1),
+        "data_subdir_mb": {k: round(v / 1024 / 1024, 1) if v >= 0 else "missing" for k, v in breakdown.items()},
+    }
+
+
 # Runs in-process, as a plain background task — not a subprocess.
 # subprocess.Popen was tried and abandoned: our call (cwd set, close_fds
 # left at its POSIX default of True) is disqualified from Python's
