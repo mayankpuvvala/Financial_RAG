@@ -397,7 +397,12 @@ def restore_data(
 
     def _restart_soon() -> None:
         time.sleep(1)   # let the HTTP response flush before the process dies
-        os._exit(0)
+        # Nonzero on purpose: platform restart policies commonly only
+        # auto-restart on a crash (nonzero exit), treating exit(0) as an
+        # intentional, successful stop that should stay stopped. Observed
+        # on Railway — the container never came back after os._exit(0)
+        # here, requiring a manual restart from the dashboard every time.
+        os._exit(1)
 
     background_tasks.add_task(_restart_soon)
     return {
@@ -445,7 +450,12 @@ def delete_data_path(
     if restart:
         def _restart_soon() -> None:
             time.sleep(1)
-            os._exit(0)
+            # Nonzero on purpose: platform restart policies commonly only
+        # auto-restart on a crash (nonzero exit), treating exit(0) as an
+        # intentional, successful stop that should stay stopped. Observed
+        # on Railway — the container never came back after os._exit(0)
+        # here, requiring a manual restart from the dashboard every time.
+        os._exit(1)
         background_tasks.add_task(_restart_soon)
 
     return {"status": "deleted", "path": path, "restarting": restart}

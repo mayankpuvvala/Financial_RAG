@@ -147,29 +147,53 @@ router = APIRouter(prefix="/chat", tags=["chat"])
 
 @router.post("", response_model=TurnOut)
 def chat(req: ChatRequest):
-    """Send a message; creates a new session when session_id is omitted."""
+    """
+    Send a message; creates a new session when session_id is omitted.
+
+    History (session validation, prior-turn context, persisting the turn)
+    is best-effort: a flaky disk under the sqlite file (observed on
+    Railway — sqlite3.OperationalError: disk I/O error on an otherwise
+    healthy volume) must not stop the actual question from being answered.
+    Every history touchpoint below degrades independently instead of
+    raising, so the answer generation path always runs regardless of
+    history's health.
+    """
     if not req.question.strip():
         raise HTTPException(400, "question cannot be empty")
 
     now = datetime.now(timezone.utc).isoformat()
     sid = req.session_id
+    history_ok = True
 
     if sid:
-        with _conn() as con:
-            if not con.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone():
-                raise HTTPException(404, f"Session {sid!r} not found")
+        try:
+            with _conn() as con:
+                if not con.execute("SELECT 1 FROM sessions WHERE id=?", (sid,)).fetchone():
+                    raise HTTPException(404, f"Session {sid!r} not found")
+        except sqlite3.Error as exc:
+            logger.warning(f"Chat history unavailable (session lookup): {exc}")
+            history_ok = False
     else:
         sid = str(uuid.uuid4())
         title = req.question[:60] + ("…" if len(req.question) > 60 else "")
-        with _conn() as con:
-            con.execute("INSERT INTO sessions VALUES (?,?,?,?)", (sid, title, now, now))
+        try:
+            with _conn() as con:
+                con.execute("INSERT INTO sessions VALUES (?,?,?,?)", (sid, title, now, now))
+        except sqlite3.Error as exc:
+            logger.warning(f"Chat history unavailable (session create): {exc}")
+            history_ok = False
 
-    # Fetch last 3 turns as memory context
-    with _conn() as con:
-        prior = con.execute(
-            "SELECT question, answer FROM turns WHERE session_id=? ORDER BY created_at DESC LIMIT 3",
-            (sid,),
-        ).fetchall()
+    # Fetch last 3 turns as memory context — best-effort, empty on failure
+    prior = []
+    if history_ok:
+        try:
+            with _conn() as con:
+                prior = con.execute(
+                    "SELECT question, answer FROM turns WHERE session_id=? ORDER BY created_at DESC LIMIT 3",
+                    (sid,),
+                ).fetchall()
+        except sqlite3.Error as exc:
+            logger.warning(f"Chat history unavailable (prior turns): {exc}")
 
     # Build question with conversation context so the classifier/LLM can resolve
     # follow-up references like "this", "compare to last year", etc.
@@ -187,13 +211,16 @@ def chat(req: ChatRequest):
         raise HTTPException(500, "Something went wrong while answering your question. Please try again.")
 
     tid = str(uuid.uuid4())
-    with _conn() as con:
-        con.execute(
-            "INSERT INTO turns VALUES (?,?,?,?,?,?,?,?)",
-            (tid, sid, req.question, result.answer,
-             result.query_type, json.dumps(result.citations), None, now),
-        )
-        con.execute("UPDATE sessions SET updated_at=? WHERE id=?", (now, sid))
+    try:
+        with _conn() as con:
+            con.execute(
+                "INSERT INTO turns VALUES (?,?,?,?,?,?,?,?)",
+                (tid, sid, req.question, result.answer,
+                 result.query_type, json.dumps(result.citations), None, now),
+            )
+            con.execute("UPDATE sessions SET updated_at=? WHERE id=?", (now, sid))
+    except sqlite3.Error as exc:
+        logger.warning(f"Chat history unavailable (saving turn): {exc}")
 
     return TurnOut(
         id=tid, session_id=sid,
