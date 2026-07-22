@@ -61,7 +61,10 @@ _client_lock = threading.Lock()
 # so EVERY endpoint (including /health) stops responding, indistinguishable
 # from the process being down. Bounding it means at least one caller gets a
 # clear, fast error instead of the platform's own opaque request timeout.
-_CLIENT_CONSTRUCT_TIMEOUT = 30
+# Kept short — shorter than Railway's own proxy timeout for an unresponsive
+# app (observed to give up around 15s with its own 502 "Application failed
+# to respond"), so /health gets a chance to return ITS clear error first.
+_CLIENT_CONSTRUCT_TIMEOUT = 8
 _client_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="qdrant-client-init")
 
 
