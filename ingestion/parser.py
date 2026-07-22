@@ -27,22 +27,22 @@ from models import ContentBlock, ParsedDocument, ParsedSection
 SECTION_PATTERNS: List[Tuple[str, str, str]] = [
 
     # ── Item N patterns (Level 1) ──────────────────────────────────────────
-    (r"item\s*1a[\.\s:]*risk\s*factor",          "item_1a_risk_factors", "Item 1A: Risk Factors"),
-    (r"item\s*1b[\.\s:]*unresolved",              "item_1b_staff",        "Item 1B: Unresolved Staff Comments"),
-    (r"item\s*1[\.\s:]*business",                 "item_1_business",      "Item 1: Business"),
-    (r"item\s*2[\.\s:]*propert",                  "item_2_properties",    "Item 2: Properties"),
-    (r"item\s*3[\.\s:]*legal",                    "item_3_legal",         "Item 3: Legal Proceedings"),
-    (r"item\s*4[\.\s:]*mine",                     "item_4_mine",          "Item 4: Mine Safety"),
-    (r"item\s*5[\.\s:]*market",                   "item_5_market",        "Item 5: Market for Equity"),
-    (r"item\s*6[\.\s:]*selected",                 "item_6_selected",      "Item 6: Selected Financial Data"),
-    (r"item\s*7a[\.\s:]*quantitative",            "item_7a_market_risk",  "Item 7A: Quantitative Disclosures"),
-    (r"item\s*7[\.\s:]*management",               "item_7_mda",           "Item 7: MD&A"),
-    (r"item\s*8[\.\s:]*financial",                "item_8_financials",    "Item 8: Financial Statements"),
-    (r"item\s*9a[\.\s:]*controls",                "item_9a_controls",     "Item 9A: Controls and Procedures"),
-    (r"item\s*9b[\.\s:]*other",                   "item_9b_other",        "Item 9B: Other Information"),
-    (r"item\s*9[\.\s:]*change",                   "item_9_accountants",   "Item 9: Disagreements with Accountants"),
+    (r"item\s*1a[\.\s:—–-]*risk\s*factor",          "item_1a_risk_factors", "Item 1A: Risk Factors"),
+    (r"item\s*1b[\.\s:—–-]*unresolved",              "item_1b_staff",        "Item 1B: Unresolved Staff Comments"),
+    (r"item\s*1[\.\s:—–-]*business",                 "item_1_business",      "Item 1: Business"),
+    (r"item\s*2[\.\s:—–-]*propert",                  "item_2_properties",    "Item 2: Properties"),
+    (r"item\s*3[\.\s:—–-]*legal",                    "item_3_legal",         "Item 3: Legal Proceedings"),
+    (r"item\s*4[\.\s:—–-]*mine",                     "item_4_mine",          "Item 4: Mine Safety"),
+    (r"item\s*5[\.\s:—–-]*market",                   "item_5_market",        "Item 5: Market for Equity"),
+    (r"item\s*6[\.\s:—–-]*selected",                 "item_6_selected",      "Item 6: Selected Financial Data"),
+    (r"item\s*7a[\.\s:—–-]*quantitative",            "item_7a_market_risk",  "Item 7A: Quantitative Disclosures"),
+    (r"item\s*7[\.\s:—–-]*management",               "item_7_mda",           "Item 7: MD&A"),
+    (r"item\s*8[\.\s:—–-]*financial",                "item_8_financials",    "Item 8: Financial Statements"),
+    (r"item\s*9a[\.\s:—–-]*controls",                "item_9a_controls",     "Item 9A: Controls and Procedures"),
+    (r"item\s*9b[\.\s:—–-]*other",                   "item_9b_other",        "Item 9B: Other Information"),
+    (r"item\s*9[\.\s:—–-]*change",                   "item_9_accountants",   "Item 9: Disagreements with Accountants"),
     (r"item\s*1[0-4][\.\s:]",                     "item_governance",      "Items 10-14: Corporate Governance"),
-    (r"item\s*15[\.\s:]*exhibit",                 "item_15_exhibits",     "Item 15: Exhibits"),
+    (r"item\s*15[\.\s:—–-]*exhibit",                 "item_15_exhibits",     "Item 15: Exhibits"),
 
     # ── Financial statement sub-sections (Level 2, inside Item 8) ─────────
     # These give precise citations ("Consolidated Statements of Operations")
