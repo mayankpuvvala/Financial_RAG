@@ -351,11 +351,19 @@ def restore_data(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     token: Optional[str] = Query(None),
+    restart: bool = Query(True, description="Restart after extracting. Set false when uploading in several batches — only the LAST one needs to restart, since local-mode Qdrant only reads meta.json/scans collections at process start, not on every file write."),
 ):
     """
     Seed the volume from a pre-built local index instead of re-running
     ingestion on Railway's constrained CPU (which, at observed local
     embedding speeds, can take hours per company — see _run_ingestion_background).
+
+    For a large index, upload in several smaller archives with
+    restart=false on all but the last (observed: restarting after every
+    batch made each round-trip take minutes with unpredictable variance —
+    restarting once at the end is both faster and more reliable, since
+    nothing needs the new files to be visible until the final restart
+    anyway).
 
     Upload a .tar.gz containing two top-level entries, `qdrant/` and
     `parsed/`, matching data/qdrant and data/parsed exactly (build it with
@@ -393,22 +401,25 @@ def restore_data(
         logger.exception("restore-data extraction failed")
         raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
-    logger.success(f"Restored {n} file(s) from uploaded archive — restarting to pick them up")
+    logger.success(f"Restored {n} file(s) from uploaded archive" + (" — restarting to pick them up" if restart else " (no restart requested — more batches expected)"))
 
-    def _restart_soon() -> None:
-        time.sleep(1)   # let the HTTP response flush before the process dies
-        # Nonzero on purpose: platform restart policies commonly only
-        # auto-restart on a crash (nonzero exit), treating exit(0) as an
-        # intentional, successful stop that should stay stopped. Observed
-        # on Railway — the container never came back after os._exit(0)
-        # here, requiring a manual restart from the dashboard every time.
-        os._exit(1)
+    if restart:
+        def _restart_soon() -> None:
+            time.sleep(1)   # let the HTTP response flush before the process dies
+            # Nonzero on purpose: platform restart policies commonly only
+            # auto-restart on a crash (nonzero exit), treating exit(0) as an
+            # intentional, successful stop that should stay stopped. Observed
+            # on Railway — the container never came back after os._exit(0)
+            # here, requiring a manual restart from the dashboard every time.
+            os._exit(1)
 
-    background_tasks.add_task(_restart_soon)
+        background_tasks.add_task(_restart_soon)
     return {
         "status": "extracted",
         "members_extracted": n,
-        "note": "process is restarting now — poll GET /health in ~10-30s for the new collection count",
+        "restarting": restart,
+        "note": ("process is restarting now — poll GET /health in ~10-30s for the new collection count"
+                  if restart else "extracted, no restart triggered — upload the next batch, or call with restart=true to finish"),
     }
 
 
