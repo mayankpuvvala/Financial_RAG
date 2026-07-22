@@ -369,6 +369,15 @@ def restore_data(
             n = _safe_extract(tar, settings.data_dir)
     except (tarfile.TarError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"Bad archive: {exc}")
+    except Exception as exc:
+        # Deliberately broad and detailed (unlike every other endpoint's
+        # generic error message): this is admin_token-gated, remote-only
+        # diagnosis for exactly this feature — a first attempt failed with
+        # a bare "Internal Server Error" and no way to see why without
+        # Railway CLI/log access, so the real exception needs to reach the
+        # response body to be debuggable at all.
+        logger.exception("restore-data extraction failed")
+        raise HTTPException(status_code=500, detail=f"{type(exc).__name__}: {exc}")
 
     logger.success(f"Restored {n} file(s) from uploaded archive — restarting to pick them up")
 
