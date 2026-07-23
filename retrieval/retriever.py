@@ -41,6 +41,8 @@ from retrieval.parent_store import parent_store
 _FOCUS_SECTION_PASS = {
     "business_overview": "Item 1: Business",
     "risk_factors":       "Item 1A: Risk Factors",
+    "legal_proceedings":  "Item 3: Legal Proceedings",
+    "cybersecurity":      "Item 1C: Cybersecurity",
 }
 
 
@@ -141,6 +143,15 @@ def retrieve(
         focus_section = _FOCUS_SECTION_PASS.get(focus)
         if focus_section:
             results += scroll_by_section(col, focus_section, limit=5)
+
+        # balance_sheet/segment_info live inside table-heavy or note sections
+        # rather than a clean dedicated Item section, so they get their own
+        # scroll target instead of an entry in _FOCUS_SECTION_PASS (whose
+        # boost branch below only rescues TEXT chunks, not table rows).
+        if focus == "balance_sheet":
+            results += scroll_by_section(col, "Consolidated Balance Sheets", limit=5)
+        elif focus == "segment_info":
+            results += scroll_by_section(col, "Notes to Financial Statements", limit=5)
 
         return results
 
@@ -256,6 +267,29 @@ def retrieve(
                 r["rerank_score"] = _score(r) + 2.0
             elif "operating income" in tl or "income from operations" in tl:
                 r["rerank_score"] = _score(r) + 0.5
+
+    elif focus == "balance_sheet":
+        _bs_row = _re.compile(r"\|\s*(?:total\s+)?cash\s+and\s+cash\s+equivalents\s*\|", _re.IGNORECASE)
+        for r in reranked:
+            t   = _text(r)
+            tl  = t.lower()
+            sec = _section(r)
+            if "balance sheet" in sec or "financial condition" in sec:
+                if _bs_row.search(t):
+                    r["rerank_score"] = _score(r) + 10.0  # balance sheet + exact row
+                else:
+                    r["rerank_score"] = _score(r) + 6.0   # balance sheet, other rows
+            elif _bs_row.search(t) or "cash and cash equivalents" in tl:
+                r["rerank_score"] = _score(r) + 2.0       # mention elsewhere
+
+    elif focus == "segment_info":
+        # No dedicated section exists for this — it's a footnote inside
+        # "Notes to Financial Statements" — so boost purely on keyword
+        # presence rather than section name.
+        for r in reranked:
+            tl = _text(r).lower()
+            if "segment" in tl:
+                r["rerank_score"] = _score(r) + (8.0 if "notes" in _section(r) else 4.0)
 
     elif focus in _FOCUS_SECTION_PASS:
         # business_overview / risk_factors — casual phrasing ("nvidia sells

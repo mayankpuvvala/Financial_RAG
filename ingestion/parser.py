@@ -29,6 +29,7 @@ SECTION_PATTERNS: List[Tuple[str, str, str]] = [
     # ── Item N patterns (Level 1) ──────────────────────────────────────────
     (r"item\s*1a[\.\s:—–-]*risk\s*factor",          "item_1a_risk_factors", "Item 1A: Risk Factors"),
     (r"item\s*1b[\.\s:—–-]*unresolved",              "item_1b_staff",        "Item 1B: Unresolved Staff Comments"),
+    (r"item\s*1c[\.\s:—–-]*cyber",                   "item_1c_cyber",        "Item 1C: Cybersecurity"),
     (r"item\s*1[\.\s:—–-]*business",                 "item_1_business",      "Item 1: Business"),
     (r"item\s*2[\.\s:—–-]*propert",                  "item_2_properties",    "Item 2: Properties"),
     (r"item\s*3[\.\s:—–-]*legal",                    "item_3_legal",         "Item 3: Legal Proceedings"),
@@ -123,7 +124,8 @@ _ITEM_RECOVERY_PATTERNS: List[Tuple[str, str, str]] = [
 
 _SECTION_PRIORITY: Dict[str, int] = {
     "item_1_business":     10,  "item_1a_risk_factors": 15,
-    "item_1b_staff":       16,  "item_2_properties":    20,
+    "item_1b_staff":       16,  "item_1c_cyber":        17,
+    "item_2_properties":    20,
     "item_3_legal":        30,  "item_4_mine":          40,
     "item_5_market":       50,  "item_6_selected":      60,
     "item_7_mda":          70,  "item_7a_market_risk":  75,

@@ -20,7 +20,10 @@ from models import QueryResult, RetrievedChunk
 from retrieval.reranker import _compress_xbrl
 
 _ENCODER     = tiktoken.get_encoding("cl100k_base")
-MAX_CTX_TOKS = 600    # per source — reduced to stay within 100K TPD on free tier
+MAX_CTX_TOKS = 1500   # per source — Groq free-tier 100K TPD budget; raised from 600
+                      # since large sections (Notes, MD&A) were getting chopped
+                      # before reaching the relevant table/paragraph. Re-lower if
+                      # daily token usage becomes a problem under real query volume.
 
 SYSTEM_PROMPT = """\
 You are a financial analyst with access to official SEC 10-K filings.

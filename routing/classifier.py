@@ -33,7 +33,8 @@ VALID_QUERY_TYPES = {"single_doc", "multi_doc", "temporal", "out_of_scope"}
 # understands as being about a given metric, not just literal keyword hits.
 VALID_FOCUS = {
     "revenue", "rd_expense", "net_income", "operating_income",
-    "business_overview", "risk_factors", "other",
+    "business_overview", "risk_factors", "legal_proceedings",
+    "balance_sheet", "segment_info", "cybersecurity", "other",
 }
 
 SYSTEM_PROMPT = """\
@@ -83,6 +84,10 @@ Also classify what the query is actually asking about, as "focus":
   business_overview  — what the company does, sells, makes, or its segments/
                         products/industry/strategy (NOT a financial figure)
   risk_factors       — risks, threats, uncertainties the company discloses
+  legal_proceedings  — lawsuits, litigation, regulatory/legal disputes
+  balance_sheet      — assets, liabilities, cash and cash equivalents, debt levels
+  segment_info       — geographic or product/business segment breakdowns
+  cybersecurity      — cybersecurity risk management, incidents, governance
   other              — anything else (financial statements in general, MD&A
                         narrative, governance, etc.)
 
