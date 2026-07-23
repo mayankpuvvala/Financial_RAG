@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from query import ask
-from retrieval.vector_store import list_collections
+from retrieval.vector_store import list_collections, delete_collection
 from api.chat import router as chat_router
 
 _UI_FILE = Path(__file__).parent.parent / "ui" / "index.html"
@@ -495,6 +495,31 @@ def delete_data_path(
         background_tasks.add_task(_restart_soon)
 
     return {"status": "deleted", "path": path, "restarting": restart}
+
+
+@app.delete("/admin/collection/{name}", tags=["meta"])
+def delete_collection_endpoint(name: str, token: Optional[str] = Query(None)):
+    """
+    Properly delete one Qdrant collection via the client's own
+    delete_collection() — unlike DELETE /admin/data-path (filesystem-only,
+    for corrupted-collection recovery), this updates data/qdrant/meta.json
+    too. Filesystem-only deletion leaves the collection registered in
+    meta.json with its data directory gone, so list_collections() keeps
+    reporting it as present — which makes the ingestion pipeline skip
+    re-processing it as "already indexed" even though it's actually empty,
+    and can leave the client hanging on that dangling reference at next
+    construction. Use this whenever a collection needs to be force-
+    re-ingested with updated parsing/chunking logic.
+    """
+    if settings.admin_token and token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+
+    if name not in list_collections():
+        raise HTTPException(status_code=404, detail=f"No such collection: {name}")
+
+    delete_collection(name)
+    logger.warning(f"Deleted Qdrant collection via admin endpoint: {name}")
+    return {"status": "deleted", "collection": name}
 
 
 @app.post("/ingest", tags=["meta"])
