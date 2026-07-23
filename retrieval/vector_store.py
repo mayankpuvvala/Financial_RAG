@@ -271,3 +271,41 @@ def scroll_by_section(
             break
 
     return results
+
+
+def scroll_by_section_id(
+    collection_name: str,
+    section_id: str,
+    limit: int = 10,
+) -> List[Dict]:
+    """
+    Same as scroll_by_section, but matches the stable internal section id
+    (Chunk.parent_id, e.g. "fs_income_stmt") instead of the display title.
+    Display titles vary by filer wording for the same logical section —
+    "Consolidated Statements of Operations" (Apple) vs "...of Income" (most
+    others), "Consolidated Balance Sheets" vs "...Statements of Financial
+    Condition" (banks) — so an exact-string match against one variant
+    silently misses filers that use the other, starving them of the
+    guaranteed-candidate pass entirely.
+    """
+    client = get_client()
+    results: List[Dict] = []
+    offset = None
+
+    while len(results) < limit:
+        batch, offset = client.scroll(
+            collection_name=collection_name,
+            limit=min(200, limit * 10),
+            offset=offset,
+            with_payload=True,
+            with_vectors=False,
+        )
+        for pt in batch:
+            if pt.payload.get("parent_id", "") == section_id:
+                results.append({"id": str(pt.id), "score": 0.4, "payload": pt.payload})
+                if len(results) >= limit:
+                    break
+        if offset is None:
+            break
+
+    return results

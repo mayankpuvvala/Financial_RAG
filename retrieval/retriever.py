@@ -26,23 +26,27 @@ from retrieval.vector_store import (
     get_collection_name,
     hybrid_search,
     list_collections,
-    scroll_by_section,
+    scroll_by_section_id,
 )
 from retrieval.reranker import rerank
 from retrieval.parent_store import parent_store
 
 # Which section a given `focus` (see routing/classifier.py's VALID_FOCUS)
 # should be guaranteed a scroll-based candidate pass for, the same way
-# "Consolidated Statements of Income" already gets one below. Casual phrasing
-# ("nvidia sells what?") has poor lexical/semantic overlap with a section's
-# formal wording, so hybrid search alone can miss it entirely — scrolling by
-# section name sidesteps that instead of trying to out-guess every possible
-# phrasing with keywords.
+# "fs_income_stmt" already gets one below. Casual phrasing ("nvidia sells
+# what?") has poor lexical/semantic overlap with a section's formal wording,
+# so hybrid search alone can miss it entirely — scrolling by the stable
+# internal section id (ingestion/parser.py's SECTION_PATTERNS ids, i.e.
+# Chunk.parent_id) sidesteps that instead of trying to out-guess every
+# possible phrasing with keywords. Uses the section id, NOT the display
+# title — display titles vary by filer wording for the same logical
+# section (see scroll_by_section_id's docstring), so matching on the id is
+# what makes this guarantee actually hold for every company.
 _FOCUS_SECTION_PASS = {
-    "business_overview": "Item 1: Business",
-    "risk_factors":       "Item 1A: Risk Factors",
-    "legal_proceedings":  "Item 3: Legal Proceedings",
-    "cybersecurity":      "Item 1C: Cybersecurity",
+    "business_overview": "item_1_business",
+    "risk_factors":       "item_1a_risk_factors",
+    "legal_proceedings":  "item_3_legal",
+    "cybersecurity":      "item_1c_cyber",
 }
 
 
@@ -138,20 +142,20 @@ def retrieve(
             top_k                = 10,
             chunk_type_filter    = "table",
         )
-        results += scroll_by_section(col, "Consolidated Statements of Income", limit=5)
+        results += scroll_by_section_id(col, "fs_income_stmt", limit=5)
 
-        focus_section = _FOCUS_SECTION_PASS.get(focus)
-        if focus_section:
-            results += scroll_by_section(col, focus_section, limit=5)
+        focus_section_id = _FOCUS_SECTION_PASS.get(focus)
+        if focus_section_id:
+            results += scroll_by_section_id(col, focus_section_id, limit=5)
 
         # balance_sheet/segment_info live inside table-heavy or note sections
         # rather than a clean dedicated Item section, so they get their own
         # scroll target instead of an entry in _FOCUS_SECTION_PASS (whose
         # boost branch below only rescues TEXT chunks, not table rows).
         if focus == "balance_sheet":
-            results += scroll_by_section(col, "Consolidated Balance Sheets", limit=5)
+            results += scroll_by_section_id(col, "fs_balance_sheet", limit=5)
         elif focus == "segment_info":
-            results += scroll_by_section(col, "Notes to Financial Statements", limit=5)
+            results += scroll_by_section_id(col, "fs_notes", limit=5)
 
         return results
 
@@ -292,14 +296,16 @@ def retrieve(
                 r["rerank_score"] = _score(r) + (8.0 if "notes" in _section(r) else 4.0)
 
     elif focus in _FOCUS_SECTION_PASS:
-        # business_overview / risk_factors — casual phrasing ("nvidia sells
-        # what?") has poor lexical overlap with a section's own formal
-        # wording, so the cross-encoder alone tends to rank financial-
-        # statement tables above it. Boost the target section's text chunks
-        # so the actual descriptive content wins.
-        target_section = _FOCUS_SECTION_PASS[focus].lower()
+        # business_overview / risk_factors / legal_proceedings / cybersecurity
+        # — casual phrasing ("nvidia sells what?") has poor lexical overlap
+        # with a section's own formal wording, so the cross-encoder alone
+        # tends to rank financial-statement tables above it. Boost the
+        # target section's text chunks so the actual descriptive content
+        # wins. Matched by parent_id (stable section id), not section_name
+        # (display title) — see _FOCUS_SECTION_PASS's docstring.
+        target_section_id = _FOCUS_SECTION_PASS[focus]
         for r in reranked:
-            if _section(r) == target_section and r["payload"].get("chunk_type") == "text":
+            if r["payload"].get("parent_id") == target_section_id and r["payload"].get("chunk_type") == "text":
                 r["rerank_score"] = _score(r) + 8.0
 
     reranked = sorted(reranked, key=lambda x: x.get("rerank_score", x["score"]), reverse=True)
