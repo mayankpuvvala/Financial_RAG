@@ -89,6 +89,12 @@ _FS_RECOVERY_PATTERNS: List[Tuple[str, str, str]] = [
     # Standard naming (JPM, GS, most companies)
     (r"^consolidated\s+statements?\s+of\s+(income|earnings)\s*$",
         "fs_income_stmt",   "Consolidated Statements of Income"),
+    # Tech-industry naming (AAPL, GOOGL, MSFT, ...) — was entirely absent
+    # from this anchored list, so it never got recovered from a TOC/index
+    # table cell even though the un-anchored SECTION_PATTERNS above already
+    # recognizes it in plain text.
+    (r"^consolidated\s+statements?\s+of\s+operations\s*$",
+        "fs_income_stmt",   "Consolidated Statements of Operations"),
     (r"^consolidated\s+(income|earnings)\s+statements?\s*$",
         "fs_income_stmt",   "Consolidated Statements of Income"),
     (r"^consolidated\s+balance\s+sheets?\s*$",
@@ -297,6 +303,119 @@ def _collect_occurrences(
     return all_occurrences, sentinel_hits
 
 
+# Descriptions given to the LLM recovery pass below — deliberately phrased
+# by MEANING (what the statement contains), not by wording, since filer
+# wording is exactly what regex can't keep up with.
+_FS_LLM_LABELS: Dict[str, str] = {
+    "fs_income_stmt":   "the primary income statement / statement of operations (net income, revenue, expenses)",
+    "fs_balance_sheet": "the balance sheet / statement of financial condition (assets, liabilities, equity balances at a point in time)",
+    "fs_cash_flow":     "the statement of cash flows (operating/investing/financing activities)",
+    "fs_equity":        "the statement of stockholders'/shareholders' equity (changes in equity across the period)",
+    "fs_notes":         "the start of the notes to the financial statements (often begins with 'Note 1' or a similar first footnote)",
+}
+
+_FS_LLM_TITLES: Dict[str, str] = {
+    "fs_income_stmt":   "Consolidated Statements of Operations",
+    "fs_balance_sheet": "Consolidated Balance Sheets",
+    "fs_cash_flow":     "Consolidated Statements of Cash Flows",
+    "fs_equity":        "Consolidated Statements of Equity",
+    "fs_notes":         "Notes to Financial Statements",
+}
+
+
+def _llm_locate_fs_headings(
+    lines:   List[str],
+    start:   int,
+    end:     int,
+    missing: List[str],
+) -> List[Tuple[int, str, str]]:
+    """
+    Regex can't enumerate every filer's wording/structure for the 5 standard
+    financial statements — verified against real filings: "Statements of
+    Operations" vs "...of Income" alone broke AAPL/GOOGL/MSFT, and filers
+    present these 5 statements in different relative orders (GOOGL: Balance
+    Sheet before Income Statement; most others: the reverse). Rather than
+    keep hand-enumerating wording variants, ask an LLM to locate each
+    missing statement's heading directly within lines[start:end] by what it
+    IS, not what it's called.
+
+    The LLM returns VERBATIM heading text, never a line number — it doesn't
+    see the document indexed the way this code does, so any line number it
+    reported would be a guess. This code locates that exact text itself via
+    substring search, so a wrong/hallucinated answer just fails to match
+    (safe no-op) instead of silently mis-splitting the document.
+    """
+    span = lines[start:end]
+    if not span or not missing:
+        return []
+
+    from groq import Groq
+    client = Groq(api_key=settings.groq_api)
+
+    # 500 lines routinely hit Groq's per-request TPM limit outright (verified:
+    # "Requested 14144/21038/... tokens, Limit 6000" 413 errors on real
+    # filings — this isn't a burst/retry-able rate limit, the single request
+    # itself was oversized). 100 lines keeps individual requests comfortably
+    # under that ceiling; MAX_PAGES raised to still cover a comparable total
+    # span across more, smaller pages.
+    PAGE_LINES = 100
+    MAX_PAGES  = 15
+    recovered: List[Tuple[int, str, str]] = []
+    found: set = set()
+
+    for page_idx, page_start in enumerate(range(0, len(span), PAGE_LINES)):
+        if len(found) == len(missing) or page_idx >= MAX_PAGES:
+            break
+        page = span[page_start:page_start + PAGE_LINES]
+        page_text = "\n".join(page)
+        if not page_text.strip():
+            continue
+
+        still_needed = [sid for sid in missing if sid not in found]
+        prompt = (
+            "This is a slice of a 10-K SEC filing's financial statements. "
+            "Table content has been replaced with <<<TABLE_N>>> placeholders. "
+            "Find the EXACT heading line (a short standalone title — NOT a "
+            "passing mention inside a sentence or footnote) that introduces "
+            "each of these, if present on this page:\n"
+            + "\n".join(f"- {sid}: {_FS_LLM_LABELS[sid]}" for sid in still_needed)
+            + "\n\nRespond with ONLY JSON mapping section id to the heading line "
+            "copied EXACTLY as it appears verbatim (do not paraphrase). Omit any "
+            "id not present on this page. Example: "
+            '{"fs_income_stmt": "CONSOLIDATED STATEMENTS OF OPERATIONS"}'
+            f"\n\nTEXT:\n{page_text}"
+        )
+        try:
+            resp = client.chat.completions.create(
+                model=settings.routing_model,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.0,
+                max_tokens=300,
+            )
+            raw = resp.choices[0].message.content.strip()
+            match = re.search(r"\{.*\}", raw, re.DOTALL)
+            data = json.loads(match.group(0)) if match else {}
+        except Exception as exc:
+            logger.warning(f"LLM fs-heading recovery failed on a page: {exc}")
+            continue
+
+        for sid, heading_text in data.items():
+            if sid in found or sid not in missing or not isinstance(heading_text, str):
+                continue
+            heading_text = heading_text.strip()
+            if not heading_text:
+                continue
+            for i, line in enumerate(page):
+                if heading_text.lower() in line.lower():
+                    abs_line = start + page_start + i
+                    recovered.append((abs_line, sid, _FS_LLM_TITLES[sid]))
+                    found.add(sid)
+                    logger.info(f"  LLM-recovered '{_FS_LLM_TITLES[sid]}' at line {abs_line}: {line.strip()[:80]}")
+                    break
+
+    return recovered
+
+
 def _select_and_validate(
     lines: List[str],
     all_occurrences: Dict[str, List[Tuple[int, str, str]]],
@@ -313,40 +432,77 @@ def _select_and_validate(
       deep inside financial footnotes (e.g. "see Item 7A"), causing
       "keep last" to misplace them and balloon section sizes.
 
-    fs_* sub-sections → LAST occurrence inside the valid window.
+    fs_* sub-sections → LAST HEADING-LIKE occurrence inside the valid window.
       Rationale: fs_* headers ("Consolidated Statements of Operations")
       appear first in the Item 8 mini-table-of-contents, then again as
       the actual statement header. "Keep first" would pick the TOC
-      listing (tiny content); "keep last" picks the actual statement.
+      listing (tiny content); "keep last" picks the actual statement —
+      EXCEPT the plain-text scan also matches prose that merely mentions
+      the phrase in passing ("...shown in the Consolidated Statements of
+      Operations for 2024..." inside a footnote, or the auditor's report's
+      "...the related consolidated statements of operations, comprehensive
+      income..."). Verified against AAPL's actual filing: these trailing
+      prose mentions run 100-400+ chars and land AFTER the true heading
+      line (which is a short, standalone, ALL-CAPS line), so blind "last
+      occurrence" picked a sentence out of the auditor's opinion letter
+      instead of the real 38-char heading. Restricting to short
+      (heading-length) lines before taking the last one fixes this without
+      the "first occurrence" TOC problem returning.
 
     Pass 2 enforces monotonic Item ordering so misdetections
-    (cross-refs, TOC stragglers) are dropped.
+    (cross-refs, TOC stragglers) are dropped — for item_* sections ONLY.
+    fs_* sub-sections are spliced in separately afterward with no ordering
+    constraint among themselves: different filers present the 5 standard
+    financial statements in different relative orders (verified: GOOGL
+    presents its Balance Sheet BEFORE its Income Statement; most others do
+    the reverse), so forcing all of them through one monotonically-
+    increasing priority sequence causes a real, validly-positioned
+    statement to be dropped as "out of order" whenever a different filer's
+    ordering doesn't match the assumed one.
     """
-    selected: Dict[str, Tuple[int, str, str]] = {}
+    # A true section heading is a short, standalone line; a prose sentence
+    # that happens to contain the same phrase runs much longer.
+    _FS_HEADING_MAX_LEN = 100
+
+    selected_item: Dict[str, Tuple[int, str, str]] = {}
+    selected_fs:   Dict[str, Tuple[int, str, str]] = {}
+
     for section_id, occurrences in all_occurrences.items():
+        bucket = selected_fs if section_id.startswith("fs_") else selected_item
         if section_id in sentinel_hits:
-            selected[section_id] = sentinel_hits[section_id]   # sentinel wins
+            bucket[section_id] = sentinel_hits[section_id]   # sentinel wins
         elif section_id.startswith("fs_"):
-            selected[section_id] = occurrences[-1]   # last = actual statement
+            heading_like = [
+                o for o in occurrences
+                if len(lines[o[0]].strip()) <= _FS_HEADING_MAX_LEN
+            ]
+            # Fall back to the true last occurrence if nothing looks
+            # heading-like, rather than dropping the section entirely.
+            bucket[section_id] = heading_like[-1] if heading_like else occurrences[-1]
         else:
-            selected[section_id] = occurrences[0]    # first = content header
+            bucket[section_id] = occurrences[0]    # first = content header
 
     # Any sentinel sections not found via text patterns also get included
     for sid, entry in sentinel_hits.items():
-        if sid not in selected:
-            selected[sid] = entry
+        bucket = selected_fs if sid.startswith("fs_") else selected_item
+        if sid not in bucket:
+            bucket[sid] = entry
 
-    candidates = sorted(selected.values(), key=lambda x: x[0])
-
-    # Monotonic priority filter — drop out-of-order misdetections
+    # Monotonic priority filter — item_* candidates ONLY
+    item_candidates = sorted(selected_item.values(), key=lambda x: x[0])
     validated: List[Tuple[int, str, str]] = []
     max_priority = -1
 
-    for entry in candidates:
+    for entry in item_candidates:
         priority = _SECTION_PRIORITY.get(entry[1], 500)
         if priority > max_priority:
             validated.append(entry)
             max_priority = priority
+
+    # Splice in fs_* candidates unconditionally (see docstring) and re-sort
+    # by line position so the merged list stays in document order.
+    validated.extend(selected_fs.values())
+    validated.sort(key=lambda x: x[0])
 
     # --- Recovery pass for bank-style filings --------------------------------
     # Banks (JPM, GS, BAC, WFC) do not place audited financial statements
@@ -396,6 +552,45 @@ def _select_and_validate(
         if recovered:
             validated.extend(recovered)
             validated.sort(key=lambda x: x[0])
+
+    # --- LLM recovery pass for fs_* headings regex still can't find ----------
+    # Filer wording for the 5 standard financial statements varies too much
+    # to enumerate by regex (verified: "Statements of Operations" vs "...of
+    # Income" alone broke AAPL/GOOGL/MSFT). Runs ONLY for whatever's still
+    # missing after every regex-based pass above — bounded cost (a handful
+    # of Groq calls), triggered rarely since most filers are already handled
+    # by regex. See _llm_locate_fs_headings for why it returns verbatim text
+    # instead of trusting the LLM's own line numbers.
+    #
+    # fs_equity excluded deliberately: verified against JPM/BAC that this
+    # specific statement type produces confident-looking but WRONG matches
+    # ("Selected capital and other metrics", a fair-value reconciliation
+    # table) rather than failing safely. Equity statements are also the
+    # least-queried of the 5 in practice — a missing section here is a much
+    # smaller cost than silently mislabeling unrelated content as it.
+    still_missing = [
+        sid for sid in ("fs_income_stmt", "fs_balance_sheet", "fs_cash_flow", "fs_notes")
+        if sid not in {e[1] for e in validated}
+    ]
+    if still_missing:
+        section_ranges = [
+            (validated[i][0], validated[i + 1][0] if i + 1 < len(validated) else skip_end)
+            for i in range(len(validated))
+        ]
+        for start_ln, end_ln in section_ranges:
+            if not still_missing:
+                break
+            if end_ln - start_ln < 1_000:
+                continue
+            try:
+                recovered = _llm_locate_fs_headings(lines, start_ln, end_ln, still_missing)
+            except Exception as exc:
+                logger.warning(f"LLM fs-heading recovery pass failed: {exc}")
+                recovered = []
+            if recovered:
+                validated.extend(recovered)
+                validated.sort(key=lambda x: x[0])
+                still_missing = [sid for sid in still_missing if sid not in {r[1] for r in recovered}]
 
     # --- Recovery pass for Item 1: Business ------------------------------
     # It's almost always the very first substantive heading right after the
@@ -531,6 +726,20 @@ def _annotate_fs_header_tables(soup: BeautifulSoup) -> None:
         # this scoped to the original 5-row window so a wide table containing
         # BOTH an fs_ cell and (further down) something matching an item-level
         # pattern still resolves to the fs_ header, not gets skipped past it.
+        #
+        # NOTE: widening this window to catch headers further down a table
+        # (tried and reverted) causes a worse regression: AAPL/GOOGL-style
+        # TOC/index tables list ALL statement titles in one table (Balance
+        # Sheet, Income Statement, Comprehensive Income, Equity, Cash Flows,
+        # Notes, ...), but this loop takes the FIRST match per table and
+        # stops (`matched = True; break`) — verified locally that widening
+        # the window just changes WHICH single statement wins that one
+        # sentinel slot per table, silently merging others (e.g. fs_notes'
+        # 56 blocks got absorbed into fs_equity) instead of fixing anything.
+        # Properly splitting AAPL/GOOGL/MSFT's financial statements needs
+        # per-row sentinel insertion (multiple sentinels per table), which
+        # is a bigger, more careful change than this pass attempted — left
+        # for a dedicated follow-up rather than shipping a regression.
         for row in rows[:5]:
             for cell in row.find_all(["td", "th"]):
                 cell_text = cell.get_text(separator=" ", strip=True).lower()
