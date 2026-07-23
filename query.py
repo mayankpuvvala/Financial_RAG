@@ -6,14 +6,32 @@ Query entry point — routes a question through the full pipeline.
     python query.py "How did Amazon's operating margin trend from 2023 to 2025?"
 """
 
+import re
 import sys
 from loguru import logger
 
+from config import settings
 from routing.resolver import classify_and_ensure
 from retrieval.retriever import retrieve
 from generation.generator import generate_answer
 from generation.synthesizer import synthesize
 from models import QueryResult
+
+# Catches the model's own "not found" phrasing so a refused single_doc
+# answer can trigger one broadened retry instead of being accepted as final.
+# Deliberately over-inclusive (false positives just cost one extra, usually-
+# redundant retry; false negatives silently ship a wrong "not found").
+_REFUSAL_PATTERN = re.compile(
+    r"cannot be found|cannot be determined|can.t be found|"
+    r"does not (?:explicitly )?(?:mention|state|provide|discuss|contain)|"
+    r"not explicitly (?:mentioned|stated)|no relevant information|"
+    r"is not (?:mentioned|provided|available|explicitly stated) in the",
+    re.IGNORECASE,
+)
+
+
+def _is_refusal(answer: str) -> bool:
+    return bool(_REFUSAL_PATTERN.search(answer))
 
 
 def ask(query: str) -> QueryResult:
@@ -48,11 +66,19 @@ def ask(query: str) -> QueryResult:
             focus=classification.focus,
         )
     else:
-        # single_doc or summarization — standard retrieval
+        # single_doc or summarization — standard retrieval.
+        # "single_doc" queries can still span multiple years (e.g. "most
+        # recent" expands to all 3 years, or the user lists several years
+        # explicitly without phrasing it as a trend). top_k must scale with
+        # that, or years/tickers beyond the first few get starved out by the
+        # fixed default — capped at 5x to bound context size/cost.
+        n_targets = max(1, len(classification.tickers)) * max(1, len(classification.years))
+        top_k = settings.rerank_top_k * min(n_targets, 5)
         retrieved = retrieve(
             query=query,
             tickers=classification.tickers,
             years=classification.years,
+            top_k=top_k,
             focus=classification.focus,
         )
         result = generate_answer(
@@ -60,6 +86,29 @@ def ask(query: str) -> QueryResult:
             retrieved=retrieved,
             query_type=classification.query_type,
         )
+
+        # One bounded retry: a narrow focus boost can mis-target the wrong
+        # section, or top_k can just be too tight — before accepting "not
+        # found" as final, retry once with the focus restriction dropped and
+        # top_k widened. Capped at a single retry so a genuinely
+        # out-of-scope query still fails fast rather than doubling Groq
+        # cost on every miss.
+        if _is_refusal(result.answer):
+            logger.info(f"Refusal detected, retrying with broadened search: '{query[:60]}'")
+            retried = retrieve(
+                query=query,
+                tickers=classification.tickers,
+                years=classification.years,
+                top_k=min(top_k * 2, 15),
+                focus="other",
+            )
+            retried_result = generate_answer(
+                query=query,
+                retrieved=retried,
+                query_type=classification.query_type,
+            )
+            if not _is_refusal(retried_result.answer):
+                result = retried_result
 
     return result
 

@@ -304,19 +304,27 @@ def retrieve(
 
     reranked = sorted(reranked, key=lambda x: x.get("rerank_score", x["score"]), reverse=True)
 
-    # --- 4c. Section + type diversity.
+    # --- 4c. Ticker + year + section + type diversity.
     #
-    # Allow up to 2 TABLE chunks and 2 TEXT chunks per section.  Allowing 2
-    # (rather than 1) per type+section pair is critical for XBRL tables that
-    # are split into sub-chunks: the year-header sub-chunk and the financial-
-    # data sub-chunk are both needed so the LLM can match numbers to years.
+    # Allow up to 2 TABLE chunks and 2 TEXT chunks per (ticker, year, section).
+    # Allowing 2 (rather than 1) per type+section pair is critical for XBRL
+    # tables that are split into sub-chunks: the year-header sub-chunk and
+    # the financial-data sub-chunk are both needed so the LLM can match
+    # numbers to years. The key MUST include ticker/fiscal_year — section
+    # names ("Consolidated Statements of Operations") repeat identically
+    # across every fiscal year of a company, so a section-only key made
+    # different years compete for the same 2-slot quota and silently
+    # dropped whichever year lost, even when it was a top-ranked candidate.
     from collections import defaultdict
     type_section_counts: dict = defaultdict(int)
     diverse: List[dict] = []
     for r in reranked:
-        section    = r["payload"].get("section_name", "")
-        chunk_type = r["payload"].get("chunk_type", "text")
-        key = (section, chunk_type)
+        payload    = r["payload"]
+        ticker     = payload.get("ticker", "")
+        fiscal_yr  = payload.get("fiscal_year", "")
+        section    = payload.get("section_name", "")
+        chunk_type = payload.get("chunk_type", "text")
+        key = (ticker, fiscal_yr, section, chunk_type)
         if type_section_counts[key] < 2:
             diverse.append(r)
             type_section_counts[key] += 1
