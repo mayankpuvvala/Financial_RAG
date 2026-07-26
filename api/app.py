@@ -592,6 +592,29 @@ def migrate_to_remote_status(token: Optional[str] = Query(None)):
     return _migrate_state
 
 
+@app.post("/admin/evict-stale-companies", tags=["meta"])
+def evict_stale_companies_endpoint(
+    days:    int  = Query(30, ge=1, description="Remove auto-ingested companies not asked about in this many days"),
+    dry_run: bool = Query(True, description="Report what would be removed without deleting anything"),
+    token:   Optional[str] = Query(None),
+):
+    """
+    Auto-ingested companies (anything outside the bundled 12 — see
+    ingestion.auto_ingest._BUNDLED_TICKERS) accumulate in Qdrant/data/parsed
+    forever once indexed, with no cap, on a storage-capped host. This
+    evicts ones nobody has asked about in `days` days, using
+    auto_ingest.py's per-ticker last-access log — the bundled 12 are never
+    touched regardless of what that log contains. Defaults to a dry run;
+    pass dry_run=false to actually delete.
+    """
+    if settings.admin_token and token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+
+    from ingestion.auto_ingest import evict_stale_companies
+    report = evict_stale_companies(max_age_days=days, dry_run=dry_run)
+    return {"dry_run": dry_run, "days": days, "evicted": report}
+
+
 @app.post("/ingest", tags=["meta"])
 def ingest(background_tasks: BackgroundTasks, token: Optional[str] = Query(None)):
     """

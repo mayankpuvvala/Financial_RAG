@@ -27,13 +27,16 @@ same as the bundled 12, because the result is persisted to disk/Qdrant
 exactly like they are.
 """
 
+import json
+import shutil
 import threading
 import time
+from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from loguru import logger
 
-from config import settings, TICKER_TO_COMPANY
+from config import settings, COMPANIES, TICKER_TO_COMPANY
 from ingestion.downloader import download_all_filings
 from ingestion.parser import parse_all_filings
 from ingestion.chunker import chunk_all_documents
@@ -46,6 +49,82 @@ _locks:       Dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 _failed:      Dict[str, float]          = {}   # ticker -> time.time() of last failure
 _FAIL_TTL     = 300  # don't retry a failed ticker for 5 minutes
+
+_BUNDLED_TICKERS = {c["ticker"] for c in COMPANIES}
+
+# Every auto-ingested company (i.e. everything NOT in the bundled 12 — see
+# _BUNDLED_TICKERS) sticks around in Qdrant/data/parsed forever once
+# indexed, same as the bundled ones, with no cap. That's fine for a
+# handful of companies someone actually asks about, but unbounded on a
+# storage-capped host if people keep asking about new ones. This log is
+# the "last asked about" signal evict_stale_companies() uses to decide
+# what's safe to remove — every ensure_ticker_indexed() call touches it,
+# whether it's a fresh ingest or an instant "already indexed" hit.
+_ACCESS_LOG_PATH = settings.data_dir / "auto_ingest_access.json"
+
+
+def _load_access_log() -> Dict[str, str]:
+    if not _ACCESS_LOG_PATH.exists():
+        return {}
+    try:
+        return json.loads(_ACCESS_LOG_PATH.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _touch_access(ticker: str) -> None:
+    log = _load_access_log()
+    log[ticker] = datetime.now(timezone.utc).isoformat()
+    try:
+        settings.data_dir.mkdir(parents=True, exist_ok=True)
+        _ACCESS_LOG_PATH.write_text(json.dumps(log), encoding="utf-8")
+    except OSError as exc:
+        logger.warning(f"Could not persist auto-ingest access log: {exc}")
+
+
+def evict_stale_companies(max_age_days: int = 30, dry_run: bool = True) -> Dict[str, dict]:
+    """
+    Remove auto-ingested companies (never the bundled 12 — guarded by
+    _BUNDLED_TICKERS regardless of what the access log contains) not asked
+    about in over max_age_days: their Qdrant collections and data/parsed
+    JSON, which otherwise sit there indefinitely. dry_run (default) reports
+    what WOULD be removed without deleting anything.
+    """
+    from retrieval.vector_store import delete_collection
+
+    log = _load_access_log()
+    cutoff = time.time() - max_age_days * 86400
+    stale = [
+        ticker for ticker, iso in log.items()
+        if ticker not in _BUNDLED_TICKERS
+        and datetime.fromisoformat(iso).timestamp() < cutoff
+    ]
+
+    all_collections = list_collections()
+    report: Dict[str, dict] = {}
+    for ticker in stale:
+        cols = [c for c in all_collections if c.rsplit("_", 1)[0] == ticker]
+        parsed_files = sorted(settings.parsed_dir.glob(f"{ticker}_*.json"))
+        report[ticker] = {
+            "collections":  cols,
+            "parsed_files": [p.name for p in parsed_files],
+        }
+        if not dry_run:
+            for c in cols:
+                delete_collection(c)
+            for p in parsed_files:
+                p.unlink(missing_ok=True)
+            log.pop(ticker, None)
+
+    if not dry_run and stale:
+        try:
+            _ACCESS_LOG_PATH.write_text(json.dumps(log), encoding="utf-8")
+        except OSError as exc:
+            logger.warning(f"Could not persist auto-ingest access log after eviction: {exc}")
+        parent_store.reload()
+        logger.warning(f"Evicted {len(stale)} stale auto-ingested compan(ies): {stale}")
+
+    return report
 
 # Section-title keywords covering the questions people actually ask first:
 # revenue/margins/net income (financial statements), outlook (MD&A), risk,
@@ -95,6 +174,8 @@ def ensure_ticker_indexed(ticker: str, company_name: str) -> Optional[Tuple[str,
     failure (unknown ticker, no 10-K on file, network error, etc.).
     """
     ticker = ticker.upper()
+    if ticker not in _BUNDLED_TICKERS:
+        _touch_access(ticker)
 
     # Fast path — already indexed, no I/O at all.
     existing = _existing_year(ticker)
@@ -153,6 +234,22 @@ def ensure_ticker_indexed(ticker: str, company_name: str) -> Optional[Tuple[str,
             logger.error(f"Auto-ingest embedding failed for {ticker}: {exc}")
             _failed[ticker] = time.time()
             return None
+
+        # Same pruning api/app.py's bundled-12 ingestion does, and for the
+        # same reason: raw HTML and the chunks JSON are scratch space for
+        # getting to embeddings, never read again once index_chunks() has
+        # run (it takes `chunks`/`remaining` as in-memory Chunk lists, not
+        # by re-reading these files). The bundled pipeline already prunes
+        # itself; this path didn't, so every auto-ingested company outside
+        # the original 12 — which is now most of them, see /health's
+        # collection count — left its raw filing (tens of MB) and chunk
+        # JSON sitting on the Railway volume forever. Safe to do before the
+        # background `remaining` thread finishes, since it doesn't touch
+        # either file either.
+        raw_ticker_dir = settings.raw_dir / "sec-edgar-filings" / ticker
+        shutil.rmtree(raw_ticker_dir, ignore_errors=True)
+        chunk_file = settings.chunks_dir / f"{ticker}_{doc.fiscal_year}_chunks.json"
+        chunk_file.unlink(missing_ok=True)
 
         logger.success(
             f"Auto-ingest ready: {ticker} FY{doc.fiscal_year} — "
