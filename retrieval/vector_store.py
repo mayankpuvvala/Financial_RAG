@@ -182,14 +182,32 @@ def migrate_local_to_remote(
     on qdrant_path, so a second local client can't be opened alongside the
     process's existing one to serve as the read side of the copy — this
     reuses get_client() itself as the source instead.
+
+    Safe to call again after a partial/interrupted run: a collection whose
+    remote point count already matches the local one is skipped outright;
+    one that exists but is short is resumed (points are upserted by id, so
+    re-sending already-copied ones is a harmless no-op) instead of trying
+    to recreate it, which would error since it's already there.
     """
     source = get_client()
     dest = QdrantClient(url=remote_url, api_key=remote_api_key, timeout=30)
     log = on_progress or (lambda msg: None)
+    existing_remote = {c.name for c in dest.get_collections().collections}
 
     counts: Dict[str, int] = {}
     for name in list_collections():
-        _create_collection_on(dest, name)
+        if name in existing_remote:
+            local_count = source.count(name).count
+            remote_count = dest.count(name).count
+            if remote_count == local_count:
+                counts[name] = remote_count
+                log(f"[{name}] already migrated ({remote_count} point(s)) — skipping")
+                continue
+            # Partially copied (e.g. a prior run got interrupted mid-collection)
+            # — points are upserted by id below, so resuming is safe; no need
+            # to recreate the collection.
+        else:
+            _create_collection_on(dest, name)
         moved = 0
         offset = None
         while True:
