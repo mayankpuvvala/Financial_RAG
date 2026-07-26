@@ -47,6 +47,14 @@ class Settings(BaseSettings):
     test_sets_dir:  Path = BASE_DIR / "data" / "test_sets"
     chunks_dir:     Path = BASE_DIR / "data" / "chunks"
     qdrant_path:    str  = str(BASE_DIR / "data" / "qdrant")
+    # When set, get_client() connects to this remote Qdrant instance (Qdrant
+    # Cloud or a self-hosted server) instead of embedded local-mode storage
+    # under qdrant_path. See retrieval/vector_store.get_client() — local
+    # mode loads/scans every collection into the API process's own memory,
+    # which doesn't scale on a memory-capped host once you're past a
+    # handful of collections.
+    qdrant_url:     Optional[str] = None
+    qdrant_api_key: Optional[str] = None
     # Set MODEL_CACHE_DIR=/content/drive/MyDrive/fastembed_cache in Colab to
     # persist the 219 MB embedding model across runtime restarts.
     model_cache_dir: Optional[Path] = None
@@ -89,7 +97,7 @@ class Settings(BaseSettings):
     # header value is rejected outright by the HTTP client with an opaque
     # InvalidHeader error. Strip defensively at the source instead of
     # depending on every caller/platform to paste cleanly.
-    @field_validator("groq_api", "edgar_email", "admin_token", mode="after")
+    @field_validator("groq_api", "edgar_email", "admin_token", "qdrant_url", "qdrant_api_key", mode="after")
     @classmethod
     def _strip_whitespace(cls, v):
         return v.strip() if isinstance(v, str) else v

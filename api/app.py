@@ -18,7 +18,7 @@ import threading
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
@@ -28,7 +28,7 @@ from pydantic import BaseModel, Field
 
 from config import settings
 from query import ask
-from retrieval.vector_store import list_collections, delete_collection
+from retrieval.vector_store import list_collections, delete_collection, migrate_local_to_remote
 from api.chat import router as chat_router
 
 _UI_FILE = Path(__file__).parent.parent / "ui" / "index.html"
@@ -126,10 +126,12 @@ def health():
     # /health must still respond in that case: it's the one endpoint that
     # needs to answer regardless of Qdrant's state, both for the platform's
     # own health checks and for diagnosing exactly this failure remotely.
+    qdrant_mode = "remote" if settings.qdrant_url else "local"
     try:
         cols = list_collections()
         return {
             "status": "ok",
+            "qdrant_mode": qdrant_mode,
             "collections_loaded": len(cols),
             "collections": cols,
         }
@@ -137,6 +139,7 @@ def health():
         logger.exception("Health check: Qdrant unavailable")
         return {
             "status": "degraded",
+            "qdrant_mode": qdrant_mode,
             "error": f"{type(exc).__name__}: {exc}",
             "collections_loaded": 0,
             "collections": [],
@@ -153,6 +156,8 @@ def disk_usage(token: Optional[str] = Query(None)):
     """Remote diagnosis for volume space issues — no CLI/dashboard file browser available."""
     if settings.admin_token and token != settings.admin_token:
         raise HTTPException(status_code=403, detail="Invalid or missing token")
+    if settings.qdrant_url:
+        raise HTTPException(status_code=400, detail="Not applicable — QDRANT_URL is set (remote Qdrant mode); data/qdrant isn't used.")
 
     total, used, free = shutil.disk_usage(settings.data_dir)
 
@@ -406,6 +411,8 @@ def restore_data(
     """
     if settings.admin_token and token != settings.admin_token:
         raise HTTPException(status_code=403, detail="Invalid or missing token")
+    if settings.qdrant_url:
+        raise HTTPException(status_code=400, detail="Not applicable — QDRANT_URL is set (remote Qdrant mode); data/qdrant isn't used.")
 
     if not (file.filename or "").endswith((".tar.gz", ".tgz")):
         raise HTTPException(status_code=400, detail="Expected a .tar.gz/.tgz archive")
@@ -468,6 +475,8 @@ def delete_data_path(
     """
     if settings.admin_token and token != settings.admin_token:
         raise HTTPException(status_code=403, detail="Invalid or missing token")
+    if settings.qdrant_url:
+        raise HTTPException(status_code=400, detail="Not applicable — QDRANT_URL is set (remote Qdrant mode); data/qdrant isn't used.")
 
     target = (settings.data_dir / path).resolve()
     data_dir_resolved = settings.data_dir.resolve()
@@ -520,6 +529,67 @@ def delete_collection_endpoint(name: str, token: Optional[str] = Query(None)):
     delete_collection(name)
     logger.warning(f"Deleted Qdrant collection via admin endpoint: {name}")
     return {"status": "deleted", "collection": name}
+
+
+# In-memory only (not persisted like _ingest_tail) — this is a one-shot
+# admin action, not a resumable pipeline. If the process restarts mid-copy,
+# just call POST /admin/migrate-to-remote again; already-created remote
+# collections are left as-is and re-copied (upsert, not insert-only).
+_migrate_state: Dict[str, object] = {"running": False, "log": [], "result": None}
+
+
+@app.post("/admin/migrate-to-remote", tags=["meta"])
+def migrate_to_remote(
+    background_tasks: BackgroundTasks,
+    qdrant_url: str = Query(..., description="Destination Qdrant Cloud/server URL"),
+    qdrant_api_key: Optional[str] = Query(None),
+    token: Optional[str] = Query(None),
+):
+    """
+    One-time copy of every collection out of local-mode storage
+    (data/qdrant) into a remote Qdrant instance, point-for-point — see
+    retrieval.vector_store.migrate_local_to_remote for why this is
+    preferred over re-running /ingest against the new store. Runs in the
+    background and reports via GET /admin/migrate-to-remote/status, since a
+    full copy of 35 collections can run past Railway's ~15s proxy timeout.
+
+    Only meaningful while this process is STILL in local mode (QDRANT_URL
+    not yet set): set QDRANT_URL/QDRANT_API_KEY in Railway's Variables tab
+    only AFTER this completes successfully, then redeploy to cut over.
+    """
+    if settings.admin_token and token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+    if settings.qdrant_url:
+        raise HTTPException(status_code=400, detail="Already running in remote mode (QDRANT_URL is set) — nothing local to migrate from.")
+    if _migrate_state["running"]:
+        raise HTTPException(status_code=409, detail="Migration already in progress")
+
+    _migrate_state["running"] = True
+    _migrate_state["log"] = []
+    _migrate_state["result"] = None
+
+    def _run() -> None:
+        try:
+            counts = migrate_local_to_remote(
+                qdrant_url, qdrant_api_key, on_progress=_migrate_state["log"].append
+            )
+            _migrate_state["result"] = counts
+            logger.success(f"Migration to remote Qdrant complete: {counts}")
+        except Exception as exc:
+            logger.exception("Migration to remote Qdrant failed")
+            _migrate_state["log"].append(f"[error] {type(exc).__name__}: {exc}")
+        finally:
+            _migrate_state["running"] = False
+
+    background_tasks.add_task(_run)
+    return {"status": "started", "poll": "GET /admin/migrate-to-remote/status"}
+
+
+@app.get("/admin/migrate-to-remote/status", tags=["meta"])
+def migrate_to_remote_status(token: Optional[str] = Query(None)):
+    if settings.admin_token and token != settings.admin_token:
+        raise HTTPException(status_code=403, detail="Invalid or missing token")
+    return _migrate_state
 
 
 @app.post("/ingest", tags=["meta"])

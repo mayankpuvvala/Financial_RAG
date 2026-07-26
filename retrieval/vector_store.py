@@ -12,7 +12,7 @@ Hybrid search uses Qdrant's built-in RRF fusion over prefetch results.
 import concurrent.futures
 import os
 import threading
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from loguru import logger
 from qdrant_client import QdrantClient
@@ -38,29 +38,19 @@ from config import settings
 # Client — single shared instance
 # ---------------------------------------------------------------------------
 
-# Local Qdrant takes an EXCLUSIVE file lock on the storage folder at
-# construction time. A plain @lru_cache doesn't protect against a cold-cache
-# race: retrieval now searches collections concurrently (see retriever.py),
-# and if get_client() is first called from multiple threads at once — e.g.
-# the very first multi-collection query after startup, since the API's
-# warm-up path never touches Qdrant — two threads can both start
-# constructing QdrantClient before either finishes and populates the cache,
-# and the second one fails with "already accessed by another instance" even
-# though they're in the same process. Double-checked locking makes only the
-# first caller actually construct it; everyone else just reads the cache.
+# A plain @lru_cache doesn't protect against a cold-cache race: retrieval
+# now searches collections concurrently (see retriever.py), and if
+# get_client() is first called from multiple threads at once — e.g. the
+# very first multi-collection query after startup, since the API's warm-up
+# path never touches Qdrant — two threads can both start constructing
+# QdrantClient before either finishes and populates the cache. In local
+# mode the second one then fails outright with "already accessed by
+# another instance" (the exclusive file lock), even though both are in the
+# same process. Double-checked locking makes only the first caller actually
+# construct it; everyone else just reads the cache.
 _client: Optional[QdrantClient] = None
 _client_lock = threading.Lock()
 
-# A corrupted/partially-written collection directory (e.g. an interrupted
-# extraction — see api/app.py's restore-data endpoint) can make
-# QdrantClient(path=...) hang rather than raise: local-mode Qdrant scans
-# every collection at construction time, and a torn-write sqlite file on a
-# network-backed volume can wedge that scan indefinitely instead of failing
-# fast. Without a bound, that hang is fatal for the whole process — every
-# caller serializes on _client_lock waiting for the same stuck construction,
-# so EVERY endpoint (including /health) stops responding, indistinguishable
-# from the process being down. Bounding it means at least one caller gets a
-# clear, fast error instead of the platform's own opaque request timeout.
 # Kept short — shorter than Railway's own proxy timeout for an unresponsive
 # app (observed to give up around 15s with its own 502 "Application failed
 # to respond"), so /health gets a chance to return ITS clear error first.
@@ -73,16 +63,37 @@ def get_client() -> QdrantClient:
     if _client is None:
         with _client_lock:
             if _client is None:
-                os.makedirs(settings.qdrant_path, exist_ok=True)
-                future = _client_executor.submit(QdrantClient, path=settings.qdrant_path)
-                try:
-                    _client = future.result(timeout=_CLIENT_CONSTRUCT_TIMEOUT)
-                except concurrent.futures.TimeoutError:
-                    raise RuntimeError(
-                        f"Qdrant client construction did not complete within "
-                        f"{_CLIENT_CONSTRUCT_TIMEOUT}s — data/qdrant may contain a "
-                        f"corrupted collection (e.g. from an interrupted write)."
+                if settings.qdrant_url:
+                    # Remote server (Qdrant Cloud or self-hosted) — just an
+                    # HTTP client handle, no local storage to scan/lock, so
+                    # no thread+timeout wrapper needed here. The `timeout`
+                    # kwarg bounds each REST call instead.
+                    _client = QdrantClient(
+                        url=settings.qdrant_url,
+                        api_key=settings.qdrant_api_key,
+                        timeout=_CLIENT_CONSTRUCT_TIMEOUT,
                     )
+                else:
+                    # Local mode takes an EXCLUSIVE file lock on the storage
+                    # folder at construction time and scans every collection
+                    # in it. A corrupted/partially-written collection
+                    # directory (e.g. an interrupted extraction — see
+                    # api/app.py's restore-data endpoint) can make that scan
+                    # hang rather than raise, wedging every caller waiting on
+                    # _client_lock — including /health — indistinguishably
+                    # from the process being down. Bounding it means at
+                    # least one caller gets a clear, fast error instead of
+                    # the platform's own opaque request timeout.
+                    os.makedirs(settings.qdrant_path, exist_ok=True)
+                    future = _client_executor.submit(QdrantClient, path=settings.qdrant_path)
+                    try:
+                        _client = future.result(timeout=_CLIENT_CONSTRUCT_TIMEOUT)
+                    except concurrent.futures.TimeoutError:
+                        raise RuntimeError(
+                            f"Qdrant client construction did not complete within "
+                            f"{_CLIENT_CONSTRUCT_TIMEOUT}s — data/qdrant may contain a "
+                            f"corrupted collection (e.g. from an interrupted write)."
+                        )
     return _client
 
 
@@ -103,8 +114,7 @@ def collection_exists(name: str) -> bool:
     return name in existing
 
 
-def create_collection(name: str) -> None:
-    client = get_client()
+def _create_collection_on(client: QdrantClient, name: str) -> None:
     client.create_collection(
         collection_name=name,
         vectors_config={
@@ -129,6 +139,10 @@ def create_collection(name: str) -> None:
     logger.debug(f"Created Qdrant collection: {name}")
 
 
+def create_collection(name: str) -> None:
+    _create_collection_on(get_client(), name)
+
+
 def delete_collection(name: str) -> None:
     get_client().delete_collection(name)
     logger.warning(f"Deleted collection: {name}")
@@ -144,6 +158,66 @@ def get_collection_stats(name: str) -> Dict:
         "name":         name,
         "points_count": info.points_count,
     }
+
+
+# ---------------------------------------------------------------------------
+# Local -> remote migration
+# ---------------------------------------------------------------------------
+
+def migrate_local_to_remote(
+    remote_url: str,
+    remote_api_key: Optional[str] = None,
+    on_progress: Optional[Callable[[str], None]] = None,
+) -> Dict[str, int]:
+    """
+    Copy every collection from the process's current local-mode client into
+    a fresh remote Qdrant instance, point-for-point (vectors + payload) —
+    an alternative to re-running ingestion against the new store, which
+    re-fetches and re-embeds every filing from scratch (see
+    api/app.py's _run_ingestion_background — observed to take hours per
+    company).
+
+    Must be called before settings.qdrant_url is set (i.e. get_client()
+    still resolves to local mode): local mode holds an exclusive file lock
+    on qdrant_path, so a second local client can't be opened alongside the
+    process's existing one to serve as the read side of the copy — this
+    reuses get_client() itself as the source instead.
+    """
+    source = get_client()
+    dest = QdrantClient(url=remote_url, api_key=remote_api_key, timeout=30)
+    log = on_progress or (lambda msg: None)
+
+    counts: Dict[str, int] = {}
+    for name in list_collections():
+        _create_collection_on(dest, name)
+        moved = 0
+        offset = None
+        while True:
+            batch, offset = source.scroll(
+                collection_name=name,
+                limit=200,
+                offset=offset,
+                with_payload=True,
+                with_vectors=True,
+            )
+            if not batch:
+                break
+            dest.upsert(
+                collection_name=name,
+                points=[
+                    PointStruct(id=pt.id, vector=pt.vector, payload=pt.payload)
+                    for pt in batch
+                ],
+                wait=True,
+            )
+            moved += len(batch)
+            if offset is None:
+                break
+        counts[name] = moved
+        logger.success(f"Migrated {moved} point(s): {name}")
+        log(f"[{name}] migrated {moved} point(s)")
+
+    return counts
 
 
 # ---------------------------------------------------------------------------
