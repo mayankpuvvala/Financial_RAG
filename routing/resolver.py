@@ -21,10 +21,12 @@ def classify_and_ensure(query: str) -> ClassifiedQuery:
         info = resolve_company(mention)
         if not info:
             logger.info(f"Auto-ingest: could not resolve company mention {mention!r}")
+            classification.failed_lookups.append(mention)
             continue
 
         result = ensure_ticker_indexed(info["ticker"], info["title"] or info["ticker"])
         if not result:
+            classification.failed_lookups.append(mention)
             continue
 
         _, year = result

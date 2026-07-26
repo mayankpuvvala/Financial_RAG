@@ -109,6 +109,8 @@ class ClassifiedQuery(BaseModel):
     reasoning:  str
     unresolved: List[str] = []      # company/ticker mentions outside the bundled 12
     focus:      str        = "other"  # see VALID_FOCUS
+    failed_lookups: List[str] = []   # unresolved mentions that turned out to have
+                                      # no SEC filings at all (set by classify_and_ensure)
 
 
 @lru_cache(maxsize=1)

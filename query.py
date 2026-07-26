@@ -48,13 +48,49 @@ def ask(query: str) -> QueryResult:
 
     # 2 — Route
     if classification.query_type == "out_of_scope":
-        from models import QueryResult
         return QueryResult(
             query=query,
             answer="This query is outside the scope of the available SEC 10-K filings.",
             citations=[],
             chunks_used=[],
             query_type="out_of_scope",
+        )
+
+    # A company was named but couldn't be resolved to any SEC filer (e.g. a
+    # private company like SpaceX) or has no 10-K on file — without this,
+    # an empty tickers list falls through to _target_collections()'s
+    # "years only" branch, which searches EVERY indexed company for the
+    # given years. That's the right behavior for a genuinely cross-company
+    # query, but wrong here: it silently returns irrelevant citations from
+    # unrelated companies and burns two Groq calls (including the refusal
+    # retry) on a query we already know we can't answer.
+    if not classification.tickers and classification.failed_lookups:
+        names = ", ".join(classification.failed_lookups)
+        return QueryResult(
+            query=query,
+            answer=(
+                f"I couldn't find any SEC filings for {names}. This system only "
+                f"answers from indexed 10-K filings, so {names} either isn't a "
+                f"public company that files with the SEC, or its filings aren't "
+                f"available here."
+            ),
+            citations=[],
+            chunks_used=[],
+            query_type="unresolved_company",
+        )
+
+    # A single_doc/summarization query is defined as being about ONE
+    # specific company — if the classifier landed here with no ticker at
+    # all (and no failed lookup to explain it, e.g. no company named in the
+    # first place), the same "search every company" fallback applies. Ask
+    # instead of guessing.
+    if classification.query_type in ("single_doc", "summarization") and not classification.tickers:
+        return QueryResult(
+            query=query,
+            answer="Which company are you asking about? I can only answer from indexed SEC 10-K filings for a specific, named company.",
+            citations=[],
+            chunks_used=[],
+            query_type="clarification_needed",
         )
 
     if classification.query_type in ("multi_doc", "temporal"):

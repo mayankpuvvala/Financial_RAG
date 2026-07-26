@@ -25,6 +25,15 @@ MAX_CTX_TOKS = 1500   # per source — Groq free-tier 100K TPD budget; raised fr
                       # before reaching the relevant table/paragraph. Re-lower if
                       # daily token usage becomes a problem under real query volume.
 
+# Per-source truncation alone doesn't bound the TOTAL prompt — enough
+# sources (e.g. the refusal-retry's widened top_k=15) can still add up past
+# Groq's per-minute token cap regardless of how relevant each one is
+# (observed: 12 sources x ~1500 tok pushed a single request to 12,177
+# tokens against a 12,000 TPM limit, a hard 413 rather than a retryable
+# blip). Kept comfortably under that limit to leave room for the system
+# prompt (~400 tok), the question, and the 512-token response reservation.
+TOTAL_CTX_BUDGET = 9000
+
 SYSTEM_PROMPT = """\
 You are a financial analyst with access to official SEC 10-K filings.
 
@@ -87,6 +96,7 @@ def _build_context(retrieved: List[RetrievedChunk]) -> tuple[str, List[dict]]:
     ctx_parts : List[str] = []
     citations : List[dict] = []
     idx = 1
+    total_toks = 0
 
     for key in order:
         group   = section_chunks[key]
@@ -113,7 +123,24 @@ def _build_context(retrieved: List[RetrievedChunk]) -> tuple[str, List[dict]]:
         else:
             body = _truncate(all_chunks_text)
 
-        ctx_parts.append(f"{header}\n{'─'*60}\n{body}")
+        piece = f"{header}\n{'─'*60}\n{body}"
+        piece_toks = len(_ENCODER.encode(piece))
+
+        # Sources arrive pre-ranked (reranker + focus boost + diversity
+        # dedup already ran) — once the running total would exceed budget,
+        # stop rather than truncate every remaining source down to nothing;
+        # the best-ranked sources already made it in. Always keep at least
+        # one source even if it alone is large, so a single strong match
+        # never gets dropped entirely.
+        if ctx_parts and total_toks + piece_toks > TOTAL_CTX_BUDGET:
+            logger.warning(
+                f"Context token budget reached ({total_toks}/{TOTAL_CTX_BUDGET}) — "
+                f"dropping {len(order) - len(ctx_parts)} lower-ranked source(s)"
+            )
+            break
+
+        ctx_parts.append(piece)
+        total_toks += piece_toks
         citations.append({
             "index":       idx,
             "company":     best_rc.chunk.company,
@@ -157,6 +184,13 @@ def _call_generation(user_message: str, retries: int = 2, backoff: float = 1.5) 
             raise
         except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
             last_exc = exc
+            # 413 (request too large for the model's TPM limit) fails
+            # identically on every retry — it's a fixed property of this
+            # specific prompt, not a transient blip — so retrying just adds
+            # latency for no chance of success.
+            if getattr(exc, "status_code", None) == 413:
+                logger.warning(f"Groq request too large (413), not retrying: {exc}")
+                raise
             if attempt < retries:
                 logger.warning(f"Groq call failed (attempt {attempt + 1}/{retries + 1}): {exc}")
                 time.sleep(backoff * (attempt + 1))
@@ -208,6 +242,19 @@ def generate_answer(
             query_type=query_type,
         )
     except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
+        if getattr(exc, "status_code", None) == 413:
+            logger.error(f"Groq request too large for generation: {exc}")
+            return QueryResult(
+                query=query,
+                answer=(
+                    "I found relevant source material below, but there was too much "
+                    "of it for the answer-generation model to process in one request. "
+                    "Try narrowing the question to one company/year at a time."
+                ),
+                citations=citations,
+                chunks_used=retrieved,
+                query_type=query_type,
+            )
         logger.error(f"Groq generation call failed after retries: {exc}")
         return QueryResult(
             query=query,
