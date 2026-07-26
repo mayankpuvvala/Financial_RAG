@@ -26,7 +26,13 @@ def classify_and_ensure(query: str) -> ClassifiedQuery:
 
         result = ensure_ticker_indexed(info["ticker"], info["title"] or info["ticker"])
         if not result:
-            classification.failed_lookups.append(mention)
+            # Resolved to a real SEC filer (info is not None) but the
+            # download/parse/embed pipeline itself failed — a technical
+            # hiccup, not "no such company." Tracked separately from
+            # failed_lookups so the caller doesn't tell the user a real,
+            # obviously-public company (e.g. a transient EDGAR download
+            # blip on ExxonMobil) "isn't a public company."
+            classification.ingest_failed.append(info["ticker"])
             continue
 
         _, year = result

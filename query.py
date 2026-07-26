@@ -64,16 +64,25 @@ def ask(query: str) -> QueryResult:
     # query, but wrong here: it silently returns irrelevant citations from
     # unrelated companies and burns two Groq calls (including the refusal
     # retry) on a query we already know we can't answer.
-    if not classification.tickers and classification.failed_lookups:
-        names = ", ".join(classification.failed_lookups)
+    if not classification.tickers and (classification.failed_lookups or classification.ingest_failed):
+        parts = []
+        if classification.failed_lookups:
+            names = ", ".join(classification.failed_lookups)
+            parts.append(
+                f"I couldn't find any SEC filings for {names} — it doesn't appear "
+                f"to be a public company that files with the SEC, or its filings "
+                f"aren't available here."
+            )
+        if classification.ingest_failed:
+            names = ", ".join(classification.ingest_failed)
+            parts.append(
+                f"I found that {names} files with the SEC, but hit a technical "
+                f"problem fetching or indexing its 10-K just now — please try "
+                f"again in a moment."
+            )
         return QueryResult(
             query=query,
-            answer=(
-                f"I couldn't find any SEC filings for {names}. This system only "
-                f"answers from indexed 10-K filings, so {names} either isn't a "
-                f"public company that files with the SEC, or its filings aren't "
-                f"available here."
-            ),
+            answer=" ".join(parts),
             citations=[],
             chunks_used=[],
             query_type="unresolved_company",

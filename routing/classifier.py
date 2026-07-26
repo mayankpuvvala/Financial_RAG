@@ -111,6 +111,10 @@ class ClassifiedQuery(BaseModel):
     focus:      str        = "other"  # see VALID_FOCUS
     failed_lookups: List[str] = []   # unresolved mentions that turned out to have
                                       # no SEC filings at all (set by classify_and_ensure)
+    ingest_failed:  List[str] = []   # mentions that DID resolve to a real filer, but
+                                      # download/parse/embed itself failed (transient —
+                                      # distinct from failed_lookups, which means "no
+                                      # such filer exists" and would otherwise mislead)
 
 
 @lru_cache(maxsize=1)

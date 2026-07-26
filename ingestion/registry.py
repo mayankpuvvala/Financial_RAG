@@ -7,6 +7,7 @@ cached to disk so normal queries never touch the network.
 """
 
 import json
+import re
 import time
 from typing import Dict, List, Optional
 
@@ -14,6 +15,15 @@ import requests
 from loguru import logger
 
 from config import settings, TICKER_TO_COMPANY
+
+def _normalize(s: str) -> str:
+    """Strip punctuation/casing so 'Coca-Cola' matches SEC's 'COCA COLA CO'
+    as readily as the hyphenated 'Coca-Cola Consolidated, Inc.' — without
+    this, a plain substring check on raw titles only ever finds candidates
+    whose punctuation happens to match the mention's, which silently
+    excludes the (usually larger, more likely-intended) company whenever
+    SEC's registered title spells it differently."""
+    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
 
 _REGISTRY_URL  = "https://www.sec.gov/files/company_tickers.json"
 _CACHE_PATH    = settings.data_dir / "company_tickers.json"
@@ -65,7 +75,7 @@ def _load_registry() -> None:
         rec = {"ticker": ticker, "title": title, "cik": cik}
         _by_ticker[ticker] = rec
         if title:
-            _titles.append((title.lower(), rec))
+            _titles.append((_normalize(title), rec))
 
     _loaded = True
     logger.debug(f"SEC company registry ready: {len(_by_ticker)} tickers indexed")
@@ -91,8 +101,18 @@ def resolve_company(mention: str) -> Optional[dict]:
         return _by_ticker[m.upper()]
 
     # Company-name match — shortest containing title wins (most specific).
-    ml = m.lower()
-    candidates = [rec for title, rec in _titles if ml in title or title in ml]
+    ml = _normalize(m)
+    candidates = [rec for norm_title, rec in _titles if ml in norm_title or norm_title in ml]
+    if not candidates:
+        # Some SEC titles concatenate words the common name spaces out
+        # (XOM is registered as "ExxonMobil Holdings Corp" — "Exxon Mobil"
+        # never appears as a substring with a space in it). Retry fully
+        # whitespace-insensitive before giving up.
+        ml_ns = ml.replace(" ", "")
+        candidates = [
+            rec for norm_title, rec in _titles
+            if ml_ns in norm_title.replace(" ", "") or norm_title.replace(" ", "") in ml_ns
+        ]
     if candidates:
         return min(candidates, key=lambda r: len(r["title"]))
 
