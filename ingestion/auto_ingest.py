@@ -47,8 +47,9 @@ from retrieval.parent_store import parent_store
 
 _locks:       Dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
-_failed:      Dict[str, float]          = {}   # ticker -> time.time() of last failure
+_failed:      Dict[str, float]              = {}   # ticker -> time.time() of last failure
 _FAIL_TTL     = 300  # don't retry a failed ticker for 5 minutes
+_year_unavailable: Dict[Tuple[str, int], float] = {}   # (ticker, year) -> time.time() of last "not on file"
 
 _BUNDLED_TICKERS = {c["ticker"] for c in COMPANIES}
 
@@ -94,11 +95,22 @@ def evict_stale_companies(max_age_days: int = 30, dry_run: bool = True) -> Dict[
 
     log = _load_access_log()
     cutoff = time.time() - max_age_days * 86400
-    stale = [
-        ticker for ticker, iso in log.items()
-        if ticker not in _BUNDLED_TICKERS
-        and datetime.fromisoformat(iso).timestamp() < cutoff
-    ]
+    stale = []
+    for ticker, iso in log.items():
+        if ticker in _BUNDLED_TICKERS:
+            continue
+        try:
+            is_stale = datetime.fromisoformat(iso).timestamp() < cutoff
+        except (ValueError, TypeError) as exc:
+            # One malformed entry (a hand-edited file, a future schema
+            # change) shouldn't take down the whole admin endpoint —
+            # _load_access_log() already guards against the FILE being
+            # unparseable, this guards a single bad VALUE inside an
+            # otherwise-valid file.
+            logger.warning(f"Auto-ingest access log: bad timestamp for {ticker!r} ({iso!r}): {exc}")
+            continue
+        if is_stale:
+            stale.append(ticker)
 
     all_collections = list_collections()
     report: Dict[str, dict] = {}
@@ -207,6 +219,15 @@ def ensure_ticker_indexed(
     if target_year is not None:
         if target_year in indexed:
             return company_name, target_year
+        # Someone already asked for this exact (ticker, year) recently and
+        # SEC genuinely doesn't have it — without this, every repeat of
+        # the same "what about FY2019" question re-downloads and re-parses
+        # the whole recent filing window, only to hit the identical result,
+        # since the fast-path check above only ever sees the years that
+        # DID come back indexed, never the one that didn't.
+        cached_miss = _year_unavailable.get((ticker, target_year))
+        if cached_miss and (time.time() - cached_miss) < _FAIL_TTL:
+            raise YearNotAvailable(ticker, target_year, indexed)
     elif indexed:
         return company_name, max(indexed)
 
@@ -332,6 +353,7 @@ def ensure_ticker_indexed(
         _failed.pop(ticker, None)
 
         if target_year is not None and target_year not in years_indexed:
+            _year_unavailable[(ticker, target_year)] = time.time()
             raise YearNotAvailable(ticker, target_year, years_indexed)
 
         return doc.company, doc.fiscal_year

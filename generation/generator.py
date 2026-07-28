@@ -31,8 +31,16 @@ MAX_CTX_TOKS = 1500   # per source — Groq free-tier 100K TPD budget; raised fr
 # (observed: 12 sources x ~1500 tok pushed a single request to 12,177
 # tokens against a 12,000 TPM limit, a hard 413 rather than a retryable
 # blip). Kept comfortably under that limit to leave room for the system
-# prompt (~400 tok), the question, and the 512-token response reservation.
-TOTAL_CTX_BUDGET = 9000
+# prompt (~400-500 tok), the question, and MAX_RESPONSE_TOKS below.
+TOTAL_CTX_BUDGET = 8500
+
+# Detail-rich answers (e.g. summarizing multi-paragraph litigation/risk
+# disclosures) were visibly hitting the old 512-token cap and cutting off
+# mid-sentence — a real quality problem, not just a truncation warning
+# nobody sees. Raised with TOTAL_CTX_BUDGET trimmed to match, so
+# system prompt + context + question + this still stays comfortably under
+# Groq's observed 12,000 TPM ceiling for this tier.
+MAX_RESPONSE_TOKS = 900
 
 SYSTEM_PROMPT = """\
 You are a financial analyst with access to official SEC 10-K filings.
@@ -177,7 +185,7 @@ def _call_generation(user_message: str, retries: int = 2, backoff: float = 1.5) 
                     {"role": "user",   "content": user_message},
                 ],
                 temperature=0.1,
-                max_tokens=512,
+                max_tokens=MAX_RESPONSE_TOKS,
             )
             return response.choices[0].message.content.strip()
         except RateLimitError:

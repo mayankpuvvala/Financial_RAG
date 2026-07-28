@@ -128,7 +128,10 @@ def _split_text(text: str, max_tokens: int, overlap_sentences: int) -> List[str]
         if sent_toks > max_tokens:
             if current:
                 chunks.append(" ".join(current))
-                current  = current[-overlap_sentences:]
+                # list[-0:] is the WHOLE list in Python, not empty — see
+                # the other _split_text overlap site below for why this
+                # guard matters.
+                current  = current[-overlap_sentences:] if overlap_sentences > 0 else []
                 cur_toks = _count_tokens(" ".join(current))
             chunks.append(sent)
             current  = []
@@ -137,8 +140,13 @@ def _split_text(text: str, max_tokens: int, overlap_sentences: int) -> List[str]
 
         if cur_toks + sent_toks > max_tokens and current:
             chunks.append(" ".join(current))
-            # Carry overlap into next chunk
-            current  = current[-overlap_sentences:]
+            # Carry overlap into next chunk. list[-0:] is the WHOLE list
+            # in Python, not empty — so overlap_sentences=0 (meaning "no
+            # overlap") would otherwise carry the entire previous chunk
+            # into the next one instead of nothing. Dormant with the
+            # current default (2), but a real trap for anyone who sets
+            # CHUNK_OVERLAP_SENTENCES=0 expecting exactly that: none.
+            current  = current[-overlap_sentences:] if overlap_sentences > 0 else []
             cur_toks = _count_tokens(" ".join(current))
 
         current.append(sent)

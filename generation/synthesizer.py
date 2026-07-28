@@ -167,7 +167,13 @@ def synthesize(
                 {"role": "user",   "content": synthesis_input},
             ],
             temperature=0.1,
-            max_tokens=768,
+            # Same truncation problem as generator.py's MAX_RESPONSE_TOKS,
+            # for the same reason (a multi-company comparison table plus a
+            # trailing "Key differences" summary has more to say than 768
+            # tokens allows) — input here is bounded by construction
+            # (already-generated sub-answers, not raw chunks), so there's
+            # comfortable TPM headroom to raise it.
+            max_tokens=1024,
         )
         answer = synthesis_response.choices[0].message.content.strip()
     except Exception as exc:

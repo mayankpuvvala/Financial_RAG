@@ -160,6 +160,26 @@ def ask(query: str) -> QueryResult:
             if not _is_refusal(retried_result.answer):
                 result = retried_result
 
+    # Partial failure: some named company mentions resolved fine and the
+    # query above proceeded on those, but at least one other explicitly
+    # named company didn't (unlike the all-failed case above, which
+    # short-circuits before ever reaching here). Without this, e.g.
+    # "compare Apple and SpaceX's revenue" would silently answer about
+    # Apple alone with no indication SpaceX was ever dropped — the same
+    # kind of unexplained gap this whole fix started from, just for a
+    # query where SOME of it could still be answered.
+    if classification.tickers and (
+        classification.failed_lookups or classification.ingest_failed or classification.year_not_available
+    ):
+        caveats = []
+        if classification.failed_lookups:
+            caveats.append(f"couldn't find SEC filings for {', '.join(classification.failed_lookups)}")
+        if classification.ingest_failed:
+            caveats.append(f"hit a technical problem indexing {', '.join(classification.ingest_failed)}")
+        if classification.year_not_available:
+            caveats.append(f"don't have the requested year for {', '.join(classification.year_not_available)}")
+        result.answer += f"\n\n*Note: I {'; '.join(caveats)}, so this only covers the companies I could find.*"
+
     return result
 
 
