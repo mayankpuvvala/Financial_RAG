@@ -19,7 +19,7 @@ from loguru import logger
 
 from config import settings
 from models import QueryResult, RetrievedChunk
-from routing.decomposer import decompose_query
+from routing.decomposer import decompose_query, decompose_temporal
 from retrieval.retriever import retrieve
 from generation.generator import generate_answer, _get_client
 
@@ -55,7 +55,19 @@ def synthesize(
     Retrieval is sequential (Qdrant SQLite lock).
     Generation is parallel (thread pool — Groq I/O releases the GIL).
     """
-    sub_questions = decompose_query(query, tickers, years)
+    # temporal is defined as one company across multiple years — decompose
+    # it deterministically (one sub-question per year, built from the
+    # classifier's own `focus`) instead of asking the LLM decomposer,
+    # which is meant for multi-company comparisons and has been observed
+    # misapplying its "describe the business" special case to single-
+    # company metric questions, and can under-deliver sub-questions for
+    # the requested year span. Falls back to the LLM path if the shape
+    # doesn't match (no ticker, or more than one — shouldn't happen for a
+    # real temporal query, but this isn't the place to enforce that).
+    if query_type == "temporal" and len(tickers) == 1 and years:
+        sub_questions = decompose_temporal(tickers[0], years, focus)
+    else:
+        sub_questions = decompose_query(query, tickers, years)
     logger.info(f"Synthesizing {len(sub_questions)} sub-questions for: '{query[:60]}'")
 
     # ── Phase 1: sequential retrieval ────────────────────────────────────────

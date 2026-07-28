@@ -64,7 +64,9 @@ def ask(query: str) -> QueryResult:
     # query, but wrong here: it silently returns irrelevant citations from
     # unrelated companies and burns two Groq calls (including the refusal
     # retry) on a query we already know we can't answer.
-    if not classification.tickers and (classification.failed_lookups or classification.ingest_failed):
+    if not classification.tickers and (
+        classification.failed_lookups or classification.ingest_failed or classification.year_not_available
+    ):
         parts = []
         if classification.failed_lookups:
             names = ", ".join(classification.failed_lookups)
@@ -80,6 +82,9 @@ def ask(query: str) -> QueryResult:
                 f"problem fetching or indexing its 10-K just now — please try "
                 f"again in a moment."
             )
+        if classification.year_not_available:
+            details = "; ".join(classification.year_not_available)
+            parts.append(f"I don't have that fiscal year for: {details}.")
         return QueryResult(
             query=query,
             answer=" ".join(parts),

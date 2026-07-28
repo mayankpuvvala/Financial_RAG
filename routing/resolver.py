@@ -11,7 +11,7 @@ from loguru import logger
 
 from routing.classifier import classify_query, ClassifiedQuery
 from ingestion.registry import resolve_company
-from ingestion.auto_ingest import ensure_ticker_indexed
+from ingestion.auto_ingest import ensure_ticker_indexed, YearNotAvailable
 
 
 def classify_and_ensure(query: str) -> ClassifiedQuery:
@@ -24,7 +24,21 @@ def classify_and_ensure(query: str) -> ClassifiedQuery:
             classification.failed_lookups.append(mention)
             continue
 
-        result = ensure_ticker_indexed(info["ticker"], info["title"] or info["ticker"])
+        # If the query named a year, try to fetch THAT year specifically
+        # rather than whatever's most recent — a query for FY2024 on a
+        # brand-new company shouldn't silently get FY2026 instead.
+        target_year = classification.years[0] if classification.years else None
+        try:
+            result = ensure_ticker_indexed(
+                info["ticker"], info["title"] or info["ticker"], target_year=target_year
+            )
+        except YearNotAvailable as exc:
+            classification.year_not_available.append(
+                f"{exc.ticker} (asked for FY{exc.requested}, have FY"
+                + "/FY".join(map(str, exc.available)) + ")"
+            )
+            continue
+
         if not result:
             # Resolved to a real SEC filer (info is not None) but the
             # download/parse/embed pipeline itself failed — a technical
