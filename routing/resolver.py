@@ -13,6 +13,17 @@ from routing.classifier import classify_query, ClassifiedQuery
 from ingestion.registry import resolve_company
 from ingestion.auto_ingest import ensure_ticker_indexed, YearNotAvailable
 
+# classify_query() always fills in SOME year per its output schema, even
+# for questions that never named one ("What are Nike's segments?" still
+# came back with a year — observed defaulting to the earliest valid one).
+# For these qualitative focuses the year is incidental, not requested, so
+# treating it as a hard requirement rejects an otherwise-fully-answerable
+# query just because the classifier's filler year isn't the one that
+# happened to get indexed. Only focuses where a specific year is actually
+# load-bearing (a financial figure that differs release to release) should
+# ever turn into a hard target_year.
+_YEAR_SENSITIVE_FOCUSES = {"revenue", "rd_expense", "net_income", "operating_income", "balance_sheet"}
+
 
 def classify_and_ensure(query: str) -> ClassifiedQuery:
     classification = classify_query(query)
@@ -24,10 +35,25 @@ def classify_and_ensure(query: str) -> ClassifiedQuery:
             classification.failed_lookups.append(mention)
             continue
 
-        # If the query named a year, try to fetch THAT year specifically
-        # rather than whatever's most recent — a query for FY2024 on a
+        # If the query named a year AND it actually matters for this kind
+        # of question, try to fetch THAT year specifically rather than
+        # whatever's most recent — a query for FY2024 revenue on a
         # brand-new company shouldn't silently get FY2026 instead.
-        target_year = classification.years[0] if classification.years else None
+        # Excludes `temporal`: it inherently wants a trend across whichever
+        # recent years are available, not exactly years[0] or nothing —
+        # hard-requiring that one would reject an otherwise-fully-
+        # answerable trend query just because the auto-ingest fetch
+        # window (recent, not tied to any specific year) didn't happen to
+        # include it.
+        target_year = (
+            classification.years[0]
+            if (
+                classification.query_type != "temporal"
+                and classification.years
+                and classification.focus in _YEAR_SENSITIVE_FOCUSES
+            )
+            else None
+        )
         try:
             result = ensure_ticker_indexed(
                 info["ticker"], info["title"] or info["ticker"], target_year=target_year
