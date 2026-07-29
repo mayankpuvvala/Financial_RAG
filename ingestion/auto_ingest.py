@@ -47,8 +47,9 @@ from retrieval.parent_store import parent_store
 
 _locks:       Dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
-_failed:      Dict[str, float]          = {}   # ticker -> time.time() of last failure
+_failed:      Dict[str, float]              = {}   # ticker -> time.time() of last failure
 _FAIL_TTL     = 300  # don't retry a failed ticker for 5 minutes
+_year_unavailable: Dict[Tuple[str, int], float] = {}   # (ticker, year) -> time.time() of last "not on file"
 
 _BUNDLED_TICKERS = {c["ticker"] for c in COMPANIES}
 
@@ -94,11 +95,22 @@ def evict_stale_companies(max_age_days: int = 30, dry_run: bool = True) -> Dict[
 
     log = _load_access_log()
     cutoff = time.time() - max_age_days * 86400
-    stale = [
-        ticker for ticker, iso in log.items()
-        if ticker not in _BUNDLED_TICKERS
-        and datetime.fromisoformat(iso).timestamp() < cutoff
-    ]
+    stale = []
+    for ticker, iso in log.items():
+        if ticker in _BUNDLED_TICKERS:
+            continue
+        try:
+            is_stale = datetime.fromisoformat(iso).timestamp() < cutoff
+        except (ValueError, TypeError) as exc:
+            # One malformed entry (a hand-edited file, a future schema
+            # change) shouldn't take down the whole admin endpoint —
+            # _load_access_log() already guards against the FILE being
+            # unparseable, this guards a single bad VALUE inside an
+            # otherwise-valid file.
+            logger.warning(f"Auto-ingest access log: bad timestamp for {ticker!r} ({iso!r}): {exc}")
+            continue
+        if is_stale:
+            stale.append(ticker)
 
     all_collections = list_collections()
     report: Dict[str, dict] = {}
@@ -157,30 +169,67 @@ def _lock_for(ticker: str) -> threading.Lock:
         return _locks.setdefault(ticker, threading.Lock())
 
 
-def _existing_year(ticker: str) -> Optional[int]:
-    """Latest fiscal year already indexed for this ticker, if any."""
+class YearNotAvailable(Exception):
+    """
+    Raised when `ticker` resolves and ingests fine, but the SPECIFIC
+    fiscal year asked for isn't among the filings SEC EDGAR actually has
+    for it (either the company's history doesn't go back that far, or the
+    request is for a year not yet filed). Distinct from returning None:
+    that still means "something about this ticker failed"; this means
+    "the ticker is fine, just not for this particular year" — a caller
+    needs to tell those apart to give an accurate message.
+    """
+    def __init__(self, ticker: str, requested: int, available: List[int]):
+        self.ticker = ticker
+        self.requested = requested
+        self.available = available
+        super().__init__(f"{ticker}: FY{requested} not available (have {available})")
+
+
+def _indexed_years(ticker: str) -> List[int]:
     years = []
     for c in list_collections():
         t, _, y = c.rpartition("_")
         if t == ticker and y.isdigit():
             years.append(int(y))
-    return max(years) if years else None
+    return sorted(years)
 
 
-def ensure_ticker_indexed(ticker: str, company_name: str) -> Optional[Tuple[str, int]]:
+def ensure_ticker_indexed(
+    ticker: str,
+    company_name: str,
+    target_year: Optional[int] = None,
+) -> Optional[Tuple[str, int]]:
     """
-    Make sure at least one fiscal year of `ticker`'s 10-K is indexed and
-    searchable. Returns (company_name, fiscal_year) on success, None on
-    failure (unknown ticker, no 10-K on file, network error, etc.).
+    Make sure `ticker`'s 10-K is indexed and searchable, for `target_year`
+    specifically if given, otherwise whatever's most recent. Returns
+    (company_name, fiscal_year) on success, None on failure (unknown
+    ticker, no 10-K on file at all, network error, etc.), or raises
+    YearNotAvailable if the ticker is fine but not for that year.
     """
     ticker = ticker.upper()
     if ticker not in _BUNDLED_TICKERS:
         _touch_access(ticker)
 
-    # Fast path — already indexed, no I/O at all.
-    existing = _existing_year(ticker)
-    if existing is not None:
-        return company_name, existing
+    # Fast path — already indexed, no I/O at all. When a specific year is
+    # requested, only THAT year satisfies the fast path — other years
+    # already being indexed for this ticker doesn't mean this one is, so
+    # don't take the shortcut on their account.
+    indexed = _indexed_years(ticker)
+    if target_year is not None:
+        if target_year in indexed:
+            return company_name, target_year
+        # Someone already asked for this exact (ticker, year) recently and
+        # SEC genuinely doesn't have it — without this, every repeat of
+        # the same "what about FY2019" question re-downloads and re-parses
+        # the whole recent filing window, only to hit the identical result,
+        # since the fast-path check above only ever sees the years that
+        # DID come back indexed, never the one that didn't.
+        cached_miss = _year_unavailable.get((ticker, target_year))
+        if cached_miss and (time.time() - cached_miss) < _FAIL_TTL:
+            raise YearNotAvailable(ticker, target_year, indexed)
+    elif indexed:
+        return company_name, max(indexed)
 
     last_fail = _failed.get(ticker)
     if last_fail and (time.time() - last_fail) < _FAIL_TTL:
@@ -188,17 +237,32 @@ def ensure_ticker_indexed(ticker: str, company_name: str) -> Optional[Tuple[str,
 
     with _lock_for(ticker):
         # Re-check inside the lock: another thread may have just finished.
-        existing = _existing_year(ticker)
-        if existing is not None:
-            return company_name, existing
+        indexed = _indexed_years(ticker)
+        if target_year is not None:
+            if target_year in indexed:
+                return company_name, target_year
+        elif indexed:
+            return company_name, max(indexed)
 
-        logger.info(f"Auto-ingest: '{ticker}' not indexed yet — fetching latest 10-K …")
+        logger.info(
+            f"Auto-ingest: '{ticker}' "
+            + (f"FY{target_year} not indexed yet — fetching …" if target_year is not None
+               else "not indexed yet — fetching latest 10-K …")
+        )
         TICKER_TO_COMPANY.setdefault(ticker, {"name": company_name, "sector": "Unknown"})
 
+        # A specific year might not be the LATEST filing, so fetch the
+        # recent window (matches settings.filings_per_company — the same
+        # window the bundled-12 pipeline indexes, and not coincidentally
+        # the same span as classifier.py's VALID_YEARS) instead of just
+        # the single latest one. Whatever else comes back in that window
+        # gets indexed too, at no extra network cost — a query for FY2023
+        # leaves FY2024/2025 already searchable as a side effect.
+        limit = settings.filings_per_company if target_year is not None else 1
         try:
             records = download_all_filings(
                 companies=[{"ticker": ticker, "name": company_name, "sector": "Unknown"}],
-                limit=1,
+                limit=limit,
             )
         except Exception as exc:
             logger.error(f"Auto-ingest download failed for {ticker}: {exc}")
@@ -222,7 +286,17 @@ def ensure_ticker_indexed(ticker: str, company_name: str) -> Optional[Tuple[str,
             _failed[ticker] = time.time()
             return None
 
-        doc = documents[0]
+        if target_year is not None:
+            available = sorted({d.fiscal_year for d in documents})
+            if target_year not in available:
+                # Not a failure of the ticker itself — everything fetched
+                # gets indexed below regardless, same as any other run.
+                logger.warning(f"Auto-ingest: {ticker} has no FY{target_year} filing (have {available})")
+                doc = documents[0]
+            else:
+                doc = next(d for d in documents if d.fiscal_year == target_year)
+        else:
+            doc = documents[0]
 
         priority, remaining = _split_by_priority(chunks)
         if not priority or len(chunks) < _MIN_CHUNKS_TO_SPLIT:
@@ -245,14 +319,16 @@ def ensure_ticker_indexed(ticker: str, company_name: str) -> Optional[Tuple[str,
         # collection count — left its raw filing (tens of MB) and chunk
         # JSON sitting on the Railway volume forever. Safe to do before the
         # background `remaining` thread finishes, since it doesn't touch
-        # either file either.
+        # either file either. One chunks.json per document now that a
+        # single call can fetch several years' worth.
         raw_ticker_dir = settings.raw_dir / "sec-edgar-filings" / ticker
         shutil.rmtree(raw_ticker_dir, ignore_errors=True)
-        chunk_file = settings.chunks_dir / f"{ticker}_{doc.fiscal_year}_chunks.json"
-        chunk_file.unlink(missing_ok=True)
+        for d in documents:
+            (settings.chunks_dir / f"{ticker}_{d.fiscal_year}_chunks.json").unlink(missing_ok=True)
 
+        years_indexed = sorted({d.fiscal_year for d in documents})
         logger.success(
-            f"Auto-ingest ready: {ticker} FY{doc.fiscal_year} — "
+            f"Auto-ingest ready: {ticker} FY{'/'.join(map(str, years_indexed))} — "
             f"{len(priority)} priority chunks searchable now"
             + (f", {len(remaining)} more indexing in the background" if remaining else "")
         )
@@ -275,4 +351,9 @@ def ensure_ticker_indexed(ticker: str, company_name: str) -> Optional[Tuple[str,
             ).start()
 
         _failed.pop(ticker, None)
+
+        if target_year is not None and target_year not in years_indexed:
+            _year_unavailable[(ticker, target_year)] = time.time()
+            raise YearNotAvailable(ticker, target_year, years_indexed)
+
         return doc.company, doc.fiscal_year

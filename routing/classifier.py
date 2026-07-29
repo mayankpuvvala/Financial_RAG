@@ -115,6 +115,8 @@ class ClassifiedQuery(BaseModel):
                                       # download/parse/embed itself failed (transient —
                                       # distinct from failed_lookups, which means "no
                                       # such filer exists" and would otherwise mislead)
+    year_not_available: List[str] = []  # resolved and indexed fine, but not for the
+                                         # SPECIFIC fiscal year asked about
 
 
 @lru_cache(maxsize=1)

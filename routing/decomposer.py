@@ -14,7 +14,7 @@ from typing import List, Dict
 from groq import Groq
 from loguru import logger
 
-from config import settings
+from config import settings, TICKER_TO_COMPANY
 
 
 @lru_cache(maxsize=1)
@@ -109,3 +109,41 @@ def decompose_query(
             for y in (years or [2024]):
                 fallback.append({"question": query, "ticker": t, "year": y})
         return fallback
+
+
+# Mirrors decompose_query's own SEC-terminology rewriting, keyed off the
+# classifier's own `focus` field (routing/classifier.py's VALID_FOCUS)
+# instead of asking an LLM to infer the metric from free text.
+_FOCUS_TO_METRIC = {
+    "revenue":           "total net sales or total revenue",
+    "rd_expense":        "research and development expenses",
+    "net_income":        "net income",
+    "operating_income":  "income from operations",
+    "balance_sheet":     "total assets, liabilities, and cash and cash equivalents",
+    "segment_info":      "business segment breakdown",
+    "business_overview": "core business, products, and segments",
+    "risk_factors":      "key risk factors",
+    "legal_proceedings": "legal proceedings",
+    "cybersecurity":     "cybersecurity risk management",
+    "other":             "financial performance",
+}
+
+
+def decompose_temporal(ticker: str, years: List[int], focus: str = "other") -> List[Dict]:
+    """
+    Deterministic decomposition for temporal queries (one company, a trend
+    across years) — no Groq call, no chance of the LLM decomposer picking
+    its multi-company "describe the business" special case for a
+    single-company query that names a specific metric (observed:
+    "how did Boeing's revenue trend recently" got decomposed into that
+    boilerplate instead of a real per-year revenue question), and no risk
+    of collapsing to fewer sub-questions than years requested. One
+    sub-question per year, guaranteed.
+    """
+    ticker = ticker.upper()
+    company_name = TICKER_TO_COMPANY.get(ticker, {}).get("name", ticker)
+    metric = _FOCUS_TO_METRIC.get(focus, _FOCUS_TO_METRIC["other"])
+    return [
+        {"question": f"What was {company_name}'s {metric} in fiscal year {year}?", "ticker": ticker, "year": year}
+        for year in sorted(set(years))
+    ]
