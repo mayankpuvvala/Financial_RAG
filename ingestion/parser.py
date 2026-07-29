@@ -59,6 +59,14 @@ SECTION_PATTERNS: List[Tuple[str, str, str]] = [
         "fs_balance_sheet", "Consolidated Balance Sheets"),
     (r"consolidated\s+statements?\s+of\s+financial\s+(condition|position)",
         "fs_balance_sheet", "Consolidated Statements of Financial Condition"),
+    # Some bank holding companies (State Street observed) drop "financial"
+    # entirely — "Consolidated Statement of Condition", not "...of Financial
+    # Condition". Distinct enough from the pattern above to need its own
+    # entry rather than making "financial" optional there, which would also
+    # start matching unrelated phrases like "consolidated statement of ...
+    # condition" in prose that has nothing to do with the balance sheet.
+    (r"consolidated\s+statements?\s+of\s+condition\b",
+        "fs_balance_sheet", "Consolidated Statement of Condition"),
     (r"consolidated\s+statements?\s+of\s+cash\s+flows?",
         "fs_cash_flow",     "Consolidated Statements of Cash Flows"),
     (r"consolidated\s+statements?\s+of\s+(stockholders|shareholders|changes\s+in\s+equity)",
@@ -101,6 +109,8 @@ _FS_RECOVERY_PATTERNS: List[Tuple[str, str, str]] = [
         "fs_balance_sheet", "Consolidated Balance Sheets"),
     (r"^consolidated\s+statements?\s+of\s+financial\s+(condition|position)\s*$",
         "fs_balance_sheet", "Consolidated Statements of Financial Condition"),
+    (r"^consolidated\s+statements?\s+of\s+condition\s*$",
+        "fs_balance_sheet", "Consolidated Statement of Condition"),
     (r"^consolidated\s+statements?\s+of\s+cash\s+flows?\s*$",
         "fs_cash_flow",     "Consolidated Statements of Cash Flows"),
     (r"^notes?\s+to\s+(consolidated\s+)?financial\s+statements?\s*$",
