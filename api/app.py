@@ -22,7 +22,7 @@ from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks, FastAPI, HTTPException, Query, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, FileResponse
 from loguru import logger
 from pydantic import BaseModel, Field
 
@@ -32,6 +32,7 @@ from retrieval.vector_store import list_collections, delete_collection, migrate_
 from api.chat import router as chat_router
 
 _UI_FILE = Path(__file__).parent.parent / "ui" / "index.html"
+_FAVICON_FILE = Path(__file__).parent.parent / "ui" / "favicon.svg"
 
 
 # ---------------------------------------------------------------------------
@@ -117,6 +118,11 @@ class QueryResponse(BaseModel):
 @app.get("/", include_in_schema=False)
 def ui():
     return HTMLResponse(_UI_FILE.read_text(encoding="utf-8"))
+
+
+@app.get("/favicon.svg", include_in_schema=False)
+def favicon():
+    return FileResponse(_FAVICON_FILE, media_type="image/svg+xml")
 
 
 @app.get("/health", tags=["meta"])
