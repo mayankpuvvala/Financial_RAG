@@ -68,7 +68,7 @@ A Retrieval-Augmented Generation system that answers precise financial questions
 ---
 
 ## Quick Start
-
+or (try live at): https://financialrag-production-420e.up.railway.app/
 ### Option A — Google Colab (recommended, no GPU needed)
 
 Open [`colab.ipynb`](colab.ipynb) — handles drive mounting, cloning, secrets, ingestion, and queries end-to-end.
