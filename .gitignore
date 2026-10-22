@@ -77,3 +77,22 @@ data/chat_history.db
 # Private notes + production chat snapshot (contains user chat data)
 PROJECT_NOTES.txt
 prod_sessions_snapshot.json
+
+# Local tool settings / alternate env files (keep .env.example)
+.claude/
+.env.*
+!.env.example
+
+# Local databases, backups, scratch
+*.sqlite
+*.sqlite3
+*.db
+*.bak
+*.tmp
+tmp/
+scratch/
+
+# Test / type-check caches
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
