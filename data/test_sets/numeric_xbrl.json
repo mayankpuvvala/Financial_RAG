@@ -1,0 +1,718 @@
+[
+  {
+    "id": "single-MSFT-revenue-2023",
+    "group": "single",
+    "metric": "revenue",
+    "question": "What was Microsoft's total revenue in fiscal year 2023?",
+    "expected": [
+      {
+        "label": "MSFT FY2023 revenue",
+        "value_usd": 211915000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-WFC-revenue-2024",
+    "group": "single",
+    "metric": "revenue",
+    "question": "What was Wells Fargo's total revenue in fiscal year 2024?",
+    "expected": [
+      {
+        "label": "WFC FY2024 revenue",
+        "value_usd": 82296000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AMZN-revenue-2024",
+    "group": "single",
+    "metric": "revenue",
+    "question": "What was Amazon's total revenue in fiscal year 2024?",
+    "expected": [
+      {
+        "label": "AMZN FY2024 revenue",
+        "value_usd": 637959000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-GOOGL-revenue-2024",
+    "group": "single",
+    "metric": "revenue",
+    "question": "What was Alphabet's total revenue in fiscal year 2024?",
+    "expected": [
+      {
+        "label": "GOOGL FY2024 revenue",
+        "value_usd": 350018000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-WFC-revenue-2025",
+    "group": "single",
+    "metric": "revenue",
+    "question": "How much revenue did Wells Fargo report for FY2025?",
+    "expected": [
+      {
+        "label": "WFC FY2025 revenue",
+        "value_usd": 83699000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AAPL-revenue-2024",
+    "group": "single",
+    "metric": "revenue",
+    "question": "How much revenue did Apple report for FY2024?",
+    "expected": [
+      {
+        "label": "AAPL FY2024 revenue",
+        "value_usd": 391035000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AAPL-revenue-2025",
+    "group": "single",
+    "metric": "revenue",
+    "question": "What was Apple's total revenue in fiscal year 2025?",
+    "expected": [
+      {
+        "label": "AAPL FY2025 revenue",
+        "value_usd": 416161000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-JPM-revenue-2023",
+    "group": "single",
+    "metric": "revenue",
+    "question": "What was JPMorgan Chase's total revenue in fiscal year 2023?",
+    "expected": [
+      {
+        "label": "JPM FY2023 revenue",
+        "value_usd": 158104000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AMZN-revenue-2023",
+    "group": "single",
+    "metric": "revenue",
+    "question": "What was Amazon's total revenue in fiscal year 2023?",
+    "expected": [
+      {
+        "label": "AMZN FY2023 revenue",
+        "value_usd": 574785000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-GOOGL-revenue-2023",
+    "group": "single",
+    "metric": "revenue",
+    "question": "How much revenue did Alphabet report for FY2023?",
+    "expected": [
+      {
+        "label": "GOOGL FY2023 revenue",
+        "value_usd": 307394000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AMZN-net_income-2023",
+    "group": "single",
+    "metric": "net_income",
+    "question": "What was Amazon's net income in fiscal year 2023?",
+    "expected": [
+      {
+        "label": "AMZN FY2023 net_income",
+        "value_usd": 30425000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-BAC-net_income-2024",
+    "group": "single",
+    "metric": "net_income",
+    "question": "How much profit did Bank of America earn in FY2024?",
+    "expected": [
+      {
+        "label": "BAC FY2024 net_income",
+        "value_usd": 27132000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-GS-net_income-2023",
+    "group": "single",
+    "metric": "net_income",
+    "question": "How much profit did Goldman Sachs earn in FY2023?",
+    "expected": [
+      {
+        "label": "GS FY2023 net_income",
+        "value_usd": 8516000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-WFC-net_income-2025",
+    "group": "single",
+    "metric": "net_income",
+    "question": "What was Wells Fargo's net income in fiscal year 2025?",
+    "expected": [
+      {
+        "label": "WFC FY2025 net_income",
+        "value_usd": 21338000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-IVZ-net_income-2024",
+    "group": "single",
+    "metric": "net_income",
+    "question": "What was Invesco's net income in fiscal year 2024?",
+    "expected": [
+      {
+        "label": "IVZ FY2024 net_income",
+        "value_usd": 538000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-TROW-net_income-2024",
+    "group": "single",
+    "metric": "net_income",
+    "question": "How much profit did T. Rowe Price earn in FY2024?",
+    "expected": [
+      {
+        "label": "TROW FY2024 net_income",
+        "value_usd": 2100100000.0
+      }
+    ]
+  },
+  {
+    "id": "single-GOOGL-net_income-2024",
+    "group": "single",
+    "metric": "net_income",
+    "question": "What was Alphabet's net income in fiscal year 2024?",
+    "expected": [
+      {
+        "label": "GOOGL FY2024 net_income",
+        "value_usd": 100118000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AAPL-net_income-2024",
+    "group": "single",
+    "metric": "net_income",
+    "question": "What was Apple's net income in fiscal year 2024?",
+    "expected": [
+      {
+        "label": "AAPL FY2024 net_income",
+        "value_usd": 93736000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-WFC-net_income-2024",
+    "group": "single",
+    "metric": "net_income",
+    "question": "What was Wells Fargo's net income in fiscal year 2024?",
+    "expected": [
+      {
+        "label": "WFC FY2024 net_income",
+        "value_usd": 19722000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-STT-net_income-2024",
+    "group": "single",
+    "metric": "net_income",
+    "question": "How much profit did State Street earn in FY2024?",
+    "expected": [
+      {
+        "label": "STT FY2024 net_income",
+        "value_usd": 2687000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AMZN-operating_income-2023",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "How much operating income did Amazon report for fiscal 2023?",
+    "expected": [
+      {
+        "label": "AMZN FY2023 operating_income",
+        "value_usd": 36852000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-TROW-operating_income-2023",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "How much operating income did T. Rowe Price report for fiscal 2023?",
+    "expected": [
+      {
+        "label": "TROW FY2023 operating_income",
+        "value_usd": 1986200000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AAPL-operating_income-2025",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "How much operating income did Apple report for fiscal 2025?",
+    "expected": [
+      {
+        "label": "AAPL FY2025 operating_income",
+        "value_usd": 133050000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AAPL-operating_income-2024",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "How much operating income did Apple report for fiscal 2024?",
+    "expected": [
+      {
+        "label": "AAPL FY2024 operating_income",
+        "value_usd": 123216000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-BLK-operating_income-2024",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "What was BlackRock's operating income in FY2024?",
+    "expected": [
+      {
+        "label": "BLK FY2024 operating_income",
+        "value_usd": 7574000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-BLK-operating_income-2025",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "What was BlackRock's operating income in FY2025?",
+    "expected": [
+      {
+        "label": "BLK FY2025 operating_income",
+        "value_usd": 7045000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-GOOGL-operating_income-2025",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "What was Alphabet's operating income in FY2025?",
+    "expected": [
+      {
+        "label": "GOOGL FY2025 operating_income",
+        "value_usd": 129039000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-GOOGL-operating_income-2023",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "What was Alphabet's operating income in FY2023?",
+    "expected": [
+      {
+        "label": "GOOGL FY2023 operating_income",
+        "value_usd": 84293000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-MSFT-operating_income-2024",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "How much operating income did Microsoft report for fiscal 2024?",
+    "expected": [
+      {
+        "label": "MSFT FY2024 operating_income",
+        "value_usd": 109433000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AMZN-operating_income-2025",
+    "group": "single",
+    "metric": "operating_income",
+    "question": "How much operating income did Amazon report for fiscal 2025?",
+    "expected": [
+      {
+        "label": "AMZN FY2025 operating_income",
+        "value_usd": 79975000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-GOOGL-rd_expense-2025",
+    "group": "single",
+    "metric": "rd_expense",
+    "question": "What were Alphabet's R&D expenses in FY2025?",
+    "expected": [
+      {
+        "label": "GOOGL FY2025 rd_expense",
+        "value_usd": 61087000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-MSFT-rd_expense-2024",
+    "group": "single",
+    "metric": "rd_expense",
+    "question": "How much did Microsoft spend on research and development in fiscal 2024?",
+    "expected": [
+      {
+        "label": "MSFT FY2024 rd_expense",
+        "value_usd": 29510000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AAPL-rd_expense-2025",
+    "group": "single",
+    "metric": "rd_expense",
+    "question": "What were Apple's R&D expenses in FY2025?",
+    "expected": [
+      {
+        "label": "AAPL FY2025 rd_expense",
+        "value_usd": 34550000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-GOOGL-rd_expense-2024",
+    "group": "single",
+    "metric": "rd_expense",
+    "question": "What were Alphabet's R&D expenses in FY2024?",
+    "expected": [
+      {
+        "label": "GOOGL FY2024 rd_expense",
+        "value_usd": 49326000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AAPL-rd_expense-2023",
+    "group": "single",
+    "metric": "rd_expense",
+    "question": "How much did Apple spend on research and development in fiscal 2023?",
+    "expected": [
+      {
+        "label": "AAPL FY2023 rd_expense",
+        "value_usd": 29915000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-MSFT-rd_expense-2025",
+    "group": "single",
+    "metric": "rd_expense",
+    "question": "How much did Microsoft spend on research and development in fiscal 2025?",
+    "expected": [
+      {
+        "label": "MSFT FY2025 rd_expense",
+        "value_usd": 32488000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-MSFT-rd_expense-2023",
+    "group": "single",
+    "metric": "rd_expense",
+    "question": "What were Microsoft's R&D expenses in FY2023?",
+    "expected": [
+      {
+        "label": "MSFT FY2023 rd_expense",
+        "value_usd": 27195000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-AAPL-rd_expense-2024",
+    "group": "single",
+    "metric": "rd_expense",
+    "question": "What were Apple's R&D expenses in FY2024?",
+    "expected": [
+      {
+        "label": "AAPL FY2024 rd_expense",
+        "value_usd": 31370000000.0
+      }
+    ]
+  },
+  {
+    "id": "single-GOOGL-rd_expense-2023",
+    "group": "single",
+    "metric": "rd_expense",
+    "question": "What were Alphabet's R&D expenses in FY2023?",
+    "expected": [
+      {
+        "label": "GOOGL FY2023 rd_expense",
+        "value_usd": 45427000000.0
+      }
+    ]
+  },
+  {
+    "id": "multi-AAPL-GOOGL-rd_expense-2025",
+    "group": "multi",
+    "metric": "rd_expense",
+    "question": "Compare Apple and Alphabet research and development expense in fiscal 2025.",
+    "expected": [
+      {
+        "label": "AAPL FY2025 rd_expense",
+        "value_usd": 34550000000.0
+      },
+      {
+        "label": "GOOGL FY2025 rd_expense",
+        "value_usd": 61087000000.0
+      }
+    ]
+  },
+  {
+    "id": "multi-MSFT-IVZ-operating_income-2025",
+    "group": "multi",
+    "metric": "operating_income",
+    "question": "Compare Microsoft and Invesco operating income in fiscal 2025.",
+    "expected": [
+      {
+        "label": "MSFT FY2025 operating_income",
+        "value_usd": 128528000000.0
+      },
+      {
+        "label": "IVZ FY2025 operating_income",
+        "value_usd": -695700000.0
+      }
+    ]
+  },
+  {
+    "id": "multi-MSFT-GOOGL-operating_income-2024",
+    "group": "multi",
+    "metric": "operating_income",
+    "question": "Compare Microsoft and Alphabet operating income in fiscal 2024.",
+    "expected": [
+      {
+        "label": "MSFT FY2024 operating_income",
+        "value_usd": 109433000000.0
+      },
+      {
+        "label": "GOOGL FY2024 operating_income",
+        "value_usd": 112390000000.0
+      }
+    ]
+  },
+  {
+    "id": "multi-GOOGL-IVZ-operating_income-2023",
+    "group": "multi",
+    "metric": "operating_income",
+    "question": "Compare Alphabet and Invesco operating income in fiscal 2023.",
+    "expected": [
+      {
+        "label": "GOOGL FY2023 operating_income",
+        "value_usd": 84293000000.0
+      },
+      {
+        "label": "IVZ FY2023 operating_income",
+        "value_usd": -434800000.0
+      }
+    ]
+  },
+  {
+    "id": "multi-TROW-GS-net_income-2025",
+    "group": "multi",
+    "metric": "net_income",
+    "question": "Compare T. Rowe Price and Goldman Sachs net income in fiscal 2025.",
+    "expected": [
+      {
+        "label": "TROW FY2025 net_income",
+        "value_usd": 2087100000.0
+      },
+      {
+        "label": "GS FY2025 net_income",
+        "value_usd": 17176000000.0
+      }
+    ]
+  },
+  {
+    "id": "multi-AAPL-MSFT-net_income-2023",
+    "group": "multi",
+    "metric": "net_income",
+    "question": "Compare Apple and Microsoft net income in fiscal 2023.",
+    "expected": [
+      {
+        "label": "AAPL FY2023 net_income",
+        "value_usd": 96995000000.0
+      },
+      {
+        "label": "MSFT FY2023 net_income",
+        "value_usd": 72361000000.0
+      }
+    ]
+  },
+  {
+    "id": "multi-GOOGL-AAPL-rd_expense-2023",
+    "group": "multi",
+    "metric": "rd_expense",
+    "question": "Compare Alphabet and Apple research and development expense in fiscal 2023.",
+    "expected": [
+      {
+        "label": "GOOGL FY2023 rd_expense",
+        "value_usd": 45427000000.0
+      },
+      {
+        "label": "AAPL FY2023 rd_expense",
+        "value_usd": 29915000000.0
+      }
+    ]
+  },
+  {
+    "id": "multi-STT-AMZN-net_income-2024",
+    "group": "multi",
+    "metric": "net_income",
+    "question": "Compare State Street and Amazon net income in fiscal 2024.",
+    "expected": [
+      {
+        "label": "STT FY2024 net_income",
+        "value_usd": 2687000000.0
+      },
+      {
+        "label": "AMZN FY2024 net_income",
+        "value_usd": 59248000000.0
+      }
+    ]
+  },
+  {
+    "id": "temporal-GOOGL-operating_income",
+    "group": "temporal",
+    "metric": "operating_income",
+    "question": "How did Alphabet's operating income change from 2023 to 2025?",
+    "expected": [
+      {
+        "label": "GOOGL FY2023 operating_income",
+        "value_usd": 84293000000.0
+      },
+      {
+        "label": "GOOGL FY2024 operating_income",
+        "value_usd": 112390000000.0
+      },
+      {
+        "label": "GOOGL FY2025 operating_income",
+        "value_usd": 129039000000.0
+      }
+    ]
+  },
+  {
+    "id": "temporal-MSFT-net_income",
+    "group": "temporal",
+    "metric": "net_income",
+    "question": "How did Microsoft's net income change from 2023 to 2025?",
+    "expected": [
+      {
+        "label": "MSFT FY2023 net_income",
+        "value_usd": 72361000000.0
+      },
+      {
+        "label": "MSFT FY2024 net_income",
+        "value_usd": 88136000000.0
+      },
+      {
+        "label": "MSFT FY2025 net_income",
+        "value_usd": 101832000000.0
+      }
+    ]
+  },
+  {
+    "id": "temporal-AAPL-net_income",
+    "group": "temporal",
+    "metric": "net_income",
+    "question": "How did Apple's net income change from 2023 to 2025?",
+    "expected": [
+      {
+        "label": "AAPL FY2023 net_income",
+        "value_usd": 96995000000.0
+      },
+      {
+        "label": "AAPL FY2024 net_income",
+        "value_usd": 93736000000.0
+      },
+      {
+        "label": "AAPL FY2025 net_income",
+        "value_usd": 112010000000.0
+      }
+    ]
+  },
+  {
+    "id": "temporal-TROW-net_income",
+    "group": "temporal",
+    "metric": "net_income",
+    "question": "How did T. Rowe Price's net income change from 2023 to 2025?",
+    "expected": [
+      {
+        "label": "TROW FY2023 net_income",
+        "value_usd": 1788700000.0
+      },
+      {
+        "label": "TROW FY2024 net_income",
+        "value_usd": 2100100000.0
+      },
+      {
+        "label": "TROW FY2025 net_income",
+        "value_usd": 2087100000.0
+      }
+    ]
+  },
+  {
+    "id": "temporal-WFC-net_income",
+    "group": "temporal",
+    "metric": "net_income",
+    "question": "How did Wells Fargo's net income change from 2023 to 2025?",
+    "expected": [
+      {
+        "label": "WFC FY2023 net_income",
+        "value_usd": 19142000000.0
+      },
+      {
+        "label": "WFC FY2024 net_income",
+        "value_usd": 19722000000.0
+      },
+      {
+        "label": "WFC FY2025 net_income",
+        "value_usd": 21338000000.0
+      }
+    ]
+  },
+  {
+    "id": "temporal-AAPL-revenue",
+    "group": "temporal",
+    "metric": "revenue",
+    "question": "How did Apple's total revenue change from 2023 to 2025?",
+    "expected": [
+      {
+        "label": "AAPL FY2023 revenue",
+        "value_usd": 383285000000.0
+      },
+      {
+        "label": "AAPL FY2024 revenue",
+        "value_usd": 391035000000.0
+      },
+      {
+        "label": "AAPL FY2025 revenue",
+        "value_usd": 416161000000.0
+      }
+    ]
+  }
+]

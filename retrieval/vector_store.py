@@ -54,7 +54,7 @@ _client_lock = threading.Lock()
 # Kept short — shorter than Railway's own proxy timeout for an unresponsive
 # app (observed to give up around 15s with its own 502 "Application failed
 # to respond"), so /health gets a chance to return ITS clear error first.
-_CLIENT_CONSTRUCT_TIMEOUT = 8
+_CLIENT_CONSTRUCT_TIMEOUT = settings.qdrant_init_timeout
 _client_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="qdrant-client-init")
 
 

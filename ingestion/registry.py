@@ -117,3 +117,10 @@ def resolve_company(mention: str) -> Optional[dict]:
         return min(candidates, key=lambda r: len(r["title"]))
 
     return None
+
+
+def cik_for_ticker(ticker: str) -> Optional[str]:
+    """Zero-padded 10-digit CIK for a ticker, from SEC's registry (None if unknown)."""
+    _load_registry()
+    rec = _by_ticker.get(ticker.strip().upper())
+    return rec["cik"] if rec else None

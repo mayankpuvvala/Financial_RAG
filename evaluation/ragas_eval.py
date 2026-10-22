@@ -49,7 +49,7 @@ from loguru import logger
 # ── project imports ──────────────────────────────────────────────────────────
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from config import settings
-from query import ask
+from query import ask, ask_baseline
 
 # ── built-in test set ────────────────────────────────────────────────────────
 # Ground-truth figures come directly from the 10-K filings.
@@ -111,13 +111,6 @@ _DEFAULT_TEST_SET = [
             "(approximately $88 billion)."
         ),
     },
-    {
-        "question": "What is the current Bitcoin price?",
-        "ground_truth": (
-            "Bitcoin price information is not available in SEC 10-K filings. "
-            "This question is out of scope for the Financial RAG system."
-        ),
-    },
 ]
 
 
@@ -134,7 +127,7 @@ def _load_test_set(path: Path | None) -> list[dict]:
     return _DEFAULT_TEST_SET
 
 
-def _run_pipeline(test_set: list[dict], delay: float = 1.5) -> list[dict]:
+def _run_pipeline(test_set: list[dict], delay: float = 1.5, ask_fn=ask) -> list[dict]:
     """
     Run every question through the RAG pipeline.
     Returns a list of dicts with question/answer/contexts/ground_truth.
@@ -144,7 +137,7 @@ def _run_pipeline(test_set: list[dict], delay: float = 1.5) -> list[dict]:
         q = item["question"]
         logger.info(f"[{i}/{len(test_set)}] {q[:80]}")
         try:
-            result = ask(q)
+            result = ask_fn(q)
             contexts = [rc.chunk.text for rc in result.chunks_used]
             rows.append(
                 {
@@ -177,17 +170,27 @@ def _build_ragas_dataset(rows: list[dict]) -> Any:
 
 
 def _configure_ragas_llm():
-    """Return a RAGAS-compatible LLM wrapper using Groq."""
+    """
+    Return a RAGAS-compatible judge LLM.
+
+    Uses OpenAI (settings.judge_model) when openai_api_key is set, so the
+    judge is independent of the Groq model that wrote the answers; otherwise
+    falls back to the Groq generation model (self-judging — scores will be
+    optimistic).
+    """
     try:
-        from langchain_groq import ChatGroq                    # type: ignore
         from ragas.llms import LangchainLLMWrapper             # type: ignore
 
-        groq_key = settings.groq_api or os.environ.get("GROQ_API_KEY", "")
-        llm = ChatGroq(
-            model="llama-3.3-70b-versatile",
-            api_key=groq_key,
-            temperature=0,
-        )
+        if settings.openai_api_key:
+            from langchain_openai import ChatOpenAI            # type: ignore
+            llm = ChatOpenAI(model=settings.judge_model, api_key=settings.openai_api_key, temperature=0)
+        else:
+            from langchain_groq import ChatGroq                # type: ignore
+            llm = ChatGroq(
+                model=settings.generation_model,
+                api_key=settings.groq_api or os.environ.get("GROQ_API_KEY", ""),
+                temperature=0,
+            )
         return LangchainLLMWrapper(llm)
     except ImportError as e:
         logger.error(
@@ -198,11 +201,16 @@ def _configure_ragas_llm():
 
 
 def _configure_ragas_embeddings():
-    """Return a RAGAS-compatible embeddings wrapper using the local BGE model."""
+    """Return a RAGAS-compatible embeddings wrapper (OpenAI if keyed, else local BGE)."""
     try:
-        from langchain_huggingface import HuggingFaceEmbeddings   # type: ignore
         from ragas.embeddings import LangchainEmbeddingsWrapper    # type: ignore
 
+        if settings.openai_api_key:
+            from langchain_openai import OpenAIEmbeddings          # type: ignore
+            return LangchainEmbeddingsWrapper(
+                OpenAIEmbeddings(model="text-embedding-3-small", api_key=settings.openai_api_key)
+            )
+        from langchain_huggingface import HuggingFaceEmbeddings   # type: ignore
         hf = HuggingFaceEmbeddings(model_name="BAAI/bge-base-en-v1.5")
         return LangchainEmbeddingsWrapper(hf)
     except ImportError as e:
@@ -301,6 +309,12 @@ def main() -> None:
         default=1.5,
         help="Seconds to wait between RAG calls (default: 1.5 to avoid rate limits)",
     )
+    ap.add_argument(
+        "--system",
+        choices=["agent", "baseline"],
+        default="agent",
+        help="agent = LangGraph pipeline with verifier (default); baseline = original linear pipeline",
+    )
     args = ap.parse_args()
 
     logger.remove()
@@ -311,7 +325,7 @@ def main() -> None:
     if args.limit:
         test_set = test_set[: args.limit]
 
-    rows    = _run_pipeline(test_set, delay=args.delay)
+    rows    = _run_pipeline(test_set, delay=args.delay, ask_fn=ask if args.system == "agent" else ask_baseline)
     dataset = _build_ragas_dataset(rows)
     _run_ragas(dataset, args.output)
 

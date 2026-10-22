@@ -36,3 +36,14 @@ langchain-huggingface>=0.0.3
 python-dotenv>=1.0.0
 tqdm>=4.66.0
 loguru>=0.7.0
+
+# Agent orchestration + tool server
+langgraph>=1.0.0
+mcp>=2.0.0          # MCP server (mcp_server.py)
+requests>=2.31.0    # SEC XBRL companyfacts
+
+# Optional independent eval judge (evaluation/ragas_eval.py)
+langchain-openai>=0.2.0
+
+# Tests
+pytest>=8.0.0

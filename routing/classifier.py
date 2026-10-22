@@ -1,5 +1,5 @@
 """
-Query classifier — routes each query to a pipeline type using Groq llama-3.1-8b.
+Query classifier — routes each query to a pipeline type using the Groq routing model (settings.routing_model).
 
 Output types:
   single_doc   — one company, one year
@@ -10,14 +10,13 @@ Output types:
 
 import json
 import re
-from functools import lru_cache
 from typing import List
 
-from groq import Groq
 from loguru import logger
 from pydantic import BaseModel
 
 from config import settings, COMPANIES
+from llm import complete
 
 VALID_TICKERS = {c["ticker"] for c in COMPANIES}
 VALID_YEARS   = {2023, 2024, 2025}
@@ -117,26 +116,21 @@ class ClassifiedQuery(BaseModel):
                                       # such filer exists" and would otherwise mislead)
     year_not_available: List[str] = []  # resolved and indexed fine, but not for the
                                          # SPECIFIC fiscal year asked about
-
-
-@lru_cache(maxsize=1)
-def _get_client() -> Groq:
-    return Groq(api_key=settings.groq_api)
+    error: str = ""                      # set when the LLM call itself failed — distinct
+                                         # from "the query names no company"
 
 
 def classify_query(query: str) -> ClassifiedQuery:
     """Classify a user query and extract target tickers / years."""
     try:
-        response = _get_client().chat.completions.create(
-            model=settings.routing_model,
-            messages=[
+        raw = complete(
+            settings.routing_model,
+            [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": query},
             ],
-            temperature=0.0,
-            max_tokens=200,
+            max_tokens=600,
         )
-        raw = response.choices[0].message.content.strip()
 
         # Strip markdown code fences if the model wraps the JSON
         match = re.search(r"\{.*\}", raw, re.DOTALL)
@@ -184,4 +178,5 @@ def classify_query(query: str) -> ClassifiedQuery:
             tickers=[],
             years=[],
             reasoning="classification error — using fallback",
+            error=f"{type(exc).__name__}: {exc}"[:300],
         )

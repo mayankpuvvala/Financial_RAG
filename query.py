@@ -6,7 +6,6 @@ Query entry point — routes a question through the full pipeline.
     python query.py "How did Amazon's operating margin trend from 2023 to 2025?"
 """
 
-import re
 import sys
 from loguru import logger
 
@@ -17,25 +16,12 @@ from generation.generator import generate_answer
 from generation.synthesizer import synthesize
 from models import QueryResult
 
-# Catches the model's own "not found" phrasing so a refused single_doc
-# answer can trigger one broadened retry instead of being accepted as final.
-# Deliberately over-inclusive (false positives just cost one extra, usually-
-# redundant retry; false negatives silently ship a wrong "not found").
-_REFUSAL_PATTERN = re.compile(
-    r"cannot be found|cannot be determined|can.t be found|"
-    r"does not (?:explicitly )?(?:mention|state|provide|discuss|contain)|"
-    r"not explicitly (?:mentioned|stated)|no relevant information|"
-    r"is not (?:mentioned|provided|available|explicitly stated) in the",
-    re.IGNORECASE,
-)
+from verification.verify import is_refusal as _is_refusal
 
 
-def _is_refusal(answer: str) -> bool:
-    return bool(_REFUSAL_PATTERN.search(answer))
-
-
-def ask(query: str) -> QueryResult:
-    """Run a query through the full RAG pipeline and return a QueryResult."""
+def ask_baseline(query: str) -> QueryResult:
+    """The original linear pipeline (no verifier, no XBRL facts) — kept so the
+    LangGraph agent can be A/B-measured against it (see evaluation/)."""
 
     # 1 — Classify (auto-ingesting any company outside the bundled 12)
     classification = classify_and_ensure(query)
@@ -202,6 +188,12 @@ def _print_result(result: QueryResult) -> None:
     print(f"Query type : {result.query_type}")
     print(f"Chunks used: {len(result.chunks_used)}")
     print("=" * 60 + "\n")
+
+
+def ask(query: str) -> QueryResult:
+    """Answer a question with the LangGraph agent (agent/graph.py)."""
+    from agent.graph import run_agent
+    return run_agent(query)
 
 
 if __name__ == "__main__":

@@ -8,18 +8,12 @@ from a single collection.
 
 import json
 import re
-from functools import lru_cache
 from typing import List, Dict
 
-from groq import Groq
 from loguru import logger
 
 from config import settings, TICKER_TO_COMPANY
-
-
-@lru_cache(maxsize=1)
-def _get_client() -> Groq:
-    return Groq(api_key=settings.groq_api)
+from llm import complete
 
 SYSTEM_PROMPT = """\
 You decompose complex financial queries into atomic sub-questions for searching SEC 10-K filings.
@@ -77,16 +71,14 @@ def decompose_query(
     Falls back to a single entry if decomposition fails.
     """
     try:
-        response = _get_client().chat.completions.create(
-            model=settings.routing_model,
-            messages=[
+        raw = complete(
+            settings.routing_model,
+            [
                 {"role": "system", "content": SYSTEM_PROMPT},
                 {"role": "user",   "content": f"Query: {query}\nTickers: {tickers}\nYears: {years}"},
             ],
-            temperature=0.0,
-            max_tokens=400,
+            max_tokens=1000,
         )
-        raw = response.choices[0].message.content.strip()
 
         match = re.search(r"\{.*\}", raw, re.DOTALL)
         if match:

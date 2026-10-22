@@ -1,4 +1,4 @@
-from pydantic import field_validator
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from pathlib import Path
 from typing import List, Dict, Optional
@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     )
 
     # API keys
-    groq_api: str
+    groq_api: Optional[str] = None     # required unless llm_provider=openai
     edgar_email: str
 
     # Optional shared secret for POST /ingest (api/app.py). If unset, the
@@ -55,6 +55,10 @@ class Settings(BaseSettings):
     # handful of collections.
     qdrant_url:     Optional[str] = None
     qdrant_api_key: Optional[str] = None
+    # Seconds to wait for embedded-Qdrant to open data/qdrant (it scans every
+    # collection). 8 suits a hosted health check; raise it for local dev with
+    # dozens of collections.
+    qdrant_init_timeout: int = 8
     # Set MODEL_CACHE_DIR=/content/drive/MyDrive/fastembed_cache in Colab to
     # persist the 219 MB embedding model across runtime restarts.
     model_cache_dir: Optional[Path] = None
@@ -87,8 +91,39 @@ class Settings(BaseSettings):
     reranker_model:  str = "Xenova/ms-marco-MiniLM-L-12-v2"  # ONNX port via fastembed — no PyTorch
 
     # Groq models
-    generation_model: str = "llama-3.3-70b-versatile"
-    routing_model:    str = "llama-3.1-8b-instant"
+    generation_model: str = "openai/gpt-oss-120b"
+    routing_model:    str = "openai/gpt-oss-20b"
+
+    # Which API serves routing/generation/synthesis: "groq" (default, free tier)
+    # or "openai". Groq's free tier allows 8000 tokens/minute per model and one
+    # answer here sends ~6-8k, i.e. roughly one query a minute — fine for a
+    # demo, a bottleneck under real use. With llm_provider=openai (needs
+    # openai_api_key), generation_model/routing_model fall back to the two
+    # defaults below unless set explicitly.
+    llm_provider:            str = "groq"
+    openai_api_key:          Optional[str] = None
+    openai_generation_model: str = "gpt-4.1"
+    openai_routing_model:    str = "gpt-4.1-mini"
+
+    # Independent judge for evaluation/ragas_eval.py, so the system under test
+    # isn't also grading its own answers. Needs openai_api_key; otherwise the
+    # eval falls back to the generation model (self-judging).
+    judge_model: str = "gpt-4.1-mini"
+
+    @model_validator(mode="after")
+    def _apply_provider(self):
+        if self.llm_provider not in ("groq", "openai"):
+            raise ValueError("llm_provider must be 'groq' or 'openai'")
+        if self.llm_provider == "groq" and not self.groq_api:
+            raise ValueError("groq_api is required when llm_provider=groq")
+        if self.llm_provider == "openai":
+            if not self.openai_api_key:
+                raise ValueError("llm_provider=openai requires openai_api_key")
+            if self.generation_model == "openai/gpt-oss-120b":
+                self.generation_model = self.openai_generation_model
+            if self.routing_model == "openai/gpt-oss-20b":
+                self.routing_model = self.openai_routing_model
+        return self
 
     # Dashboard env-var inputs (Railway, Render, ...) commonly end up with a
     # trailing newline or extra whitespace from copy-paste — invisible in the
@@ -97,7 +132,7 @@ class Settings(BaseSettings):
     # header value is rejected outright by the HTTP client with an opaque
     # InvalidHeader error. Strip defensively at the source instead of
     # depending on every caller/platform to paste cleanly.
-    @field_validator("groq_api", "edgar_email", "admin_token", "qdrant_url", "qdrant_api_key", mode="after")
+    @field_validator("groq_api", "edgar_email", "admin_token", "qdrant_url", "qdrant_api_key", "openai_api_key", mode="after")
     @classmethod
     def _strip_whitespace(cls, v):
         return v.strip() if isinstance(v, str) else v

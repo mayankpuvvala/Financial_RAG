@@ -11,17 +11,18 @@ Flow:
   5. Return a single QueryResult with merged citations
 """
 
+import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict
 
-from groq import Groq
 from loguru import logger
 
 from config import settings
 from models import QueryResult, RetrievedChunk
 from routing.decomposer import decompose_query, decompose_temporal
 from retrieval.retriever import retrieve
-from generation.generator import generate_answer, _get_client
+from generation.generator import generate_answer
+from llm import complete
 
 SYNTHESIS_SYSTEM = """\
 You are a financial analyst synthesizing multiple research findings into a single answer.
@@ -39,6 +40,26 @@ Your task:
 4. Use markdown — bullet points for lists, tables for side-by-side comparisons.
 5. Do not add any facts not present in the sub-answers.
 6. End with a concise "Key differences" summary bullet list."""
+
+
+def renumber_citations(answer: str, citations: List[dict], offset: int) -> tuple[str, List[dict]]:
+    """
+    Shift every [N] marker in `answer` (and the matching citation indexes)
+    by `offset`, so sub-answers can be concatenated without their numbering
+    colliding. Done in ONE regex pass: chained str.replace calls re-process
+    their own output (offset 2 turns [1]->[3], then the [3]->[5] replace
+    rewrites that same marker again), corrupting every multi-source answer.
+    """
+    known = {c["index"] for c in citations}
+
+    def _shift(match: "re.Match") -> str:
+        n = int(match.group(1))
+        return f"[{n + offset}]" if n in known else match.group(0)
+
+    return (
+        re.sub(r"\[(\d+)\]", _shift, answer),
+        [{**c, "index": c["index"] + offset} for c in citations],
+    )
 
 
 def synthesize(
@@ -114,6 +135,18 @@ def synthesize(
             except Exception as exc:
                 logger.error(f"  ✗ Generation failed ({sub['ticker']} FY{sub['year']}): {exc}")
 
+    return merge_sub_results(query, query_type, sub_results)
+
+
+def merge_sub_results(
+    query:       str,
+    query_type:  str,
+    sub_results: List[tuple[Dict, QueryResult]],
+) -> QueryResult:
+    """Renumber citations across sub-answers and combine them into one answer."""
+    # as_completed / parallel fan-out return these in arbitrary order
+    sub_results = sorted(sub_results, key=lambda sr: (sr[0]["ticker"], sr[0]["year"]))
+
     # Build the synthesis input
     combined_parts = []
     all_citations:  List[dict] = []
@@ -124,14 +157,9 @@ def synthesize(
         if result.answer.startswith("No relevant information was found"):
             continue
 
-        remapped_answer = result.answer
-        renumbered_cits = []
-        for cit in result.citations:
-            new_idx = cit["index"] + citation_offset
-            remapped_answer = remapped_answer.replace(
-                f"[{cit['index']}]", f"[{new_idx}]"
-            )
-            renumbered_cits.append({**cit, "index": new_idx})
+        remapped_answer, renumbered_cits = renumber_citations(
+            result.answer, result.citations, citation_offset
+        )
 
         citation_offset += len(result.citations)
 
@@ -160,9 +188,9 @@ def synthesize(
     logger.debug(f"Running synthesis call for {len(sub_results)} sub-answers")
 
     try:
-        synthesis_response = _get_client().chat.completions.create(
-            model=settings.generation_model,
-            messages=[
+        answer = complete(
+            settings.generation_model,
+            [
                 {"role": "system", "content": SYNTHESIS_SYSTEM},
                 {"role": "user",   "content": synthesis_input},
             ],
@@ -173,9 +201,8 @@ def synthesize(
             # tokens allows) — input here is bounded by construction
             # (already-generated sub-answers, not raw chunks), so there's
             # comfortable TPM headroom to raise it.
-            max_tokens=1024,
+            max_tokens=2048,
         )
-        answer = synthesis_response.choices[0].message.content.strip()
     except Exception as exc:
         logger.error(f"Synthesis call failed: {exc}")
         answer = "\n\n".join(combined_parts)   # fall back to concatenated sub-answers

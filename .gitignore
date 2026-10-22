@@ -68,3 +68,12 @@ htmlcov/
 .cache/
 models/
 *.onnx
+
+# Generated at runtime
+data/xbrl/
+data/eval_results/
+data/chat_history.db
+
+# Private notes + production chat snapshot (contains user chat data)
+PROJECT_NOTES.txt
+prod_sessions_snapshot.json

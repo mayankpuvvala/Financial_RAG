@@ -359,8 +359,7 @@ def _llm_locate_fs_headings(
     if not span or not missing:
         return []
 
-    from groq import Groq
-    client = Groq(api_key=settings.groq_api)
+    from llm import complete
 
     # 500 lines routinely hit Groq's per-request TPM limit outright (verified:
     # "Requested 14144/21038/... tokens, Limit 6000" 413 errors on real
@@ -396,13 +395,11 @@ def _llm_locate_fs_headings(
             f"\n\nTEXT:\n{page_text}"
         )
         try:
-            resp = client.chat.completions.create(
-                model=settings.routing_model,
-                messages=[{"role": "user", "content": prompt}],
-                temperature=0.0,
-                max_tokens=300,
+            raw = complete(
+                settings.routing_model,
+                [{"role": "user", "content": prompt}],
+                max_tokens=800,
             )
-            raw = resp.choices[0].message.content.strip()
             match = re.search(r"\{.*\}", raw, re.DOTALL)
             data = json.loads(match.group(0)) if match else {}
         except Exception as exc:

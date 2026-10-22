@@ -48,7 +48,7 @@ class Chunk(BaseModel):
     filing_type: str
     fiscal_year: int
     section_name: str
-    chunk_type: Literal["text", "table", "footnote"]
+    chunk_type: Literal["text", "table", "footnote", "xbrl"]
     token_count: int
     position: int = 0
 
@@ -65,3 +65,4 @@ class QueryResult(BaseModel):
     citations: List[dict]
     chunks_used: List[RetrievedChunk]
     query_type: str
+    verification: Optional[dict] = None   # verifier verdict + corrective steps taken

@@ -1,5 +1,5 @@
 """
-Answer generator — Groq (llama-3.3-70b-versatile) + citation builder.
+Answer generator — Groq (settings.generation_model) + citation builder.
 
 Flow:
   1. Build a numbered context block from retrieved chunks (parent section text)
@@ -8,14 +8,13 @@ Flow:
 """
 
 import time
-from functools import lru_cache
 from typing import List, Optional
 
 import tiktoken
-from groq import Groq, RateLimitError, APIConnectionError, APITimeoutError, APIStatusError
 from loguru import logger
 
 from config import settings
+from llm import complete, RateLimitError, APIConnectionError, APITimeoutError, APIStatusError
 from models import QueryResult, RetrievedChunk
 from retrieval.reranker import _compress_xbrl
 
@@ -40,7 +39,7 @@ TOTAL_CTX_BUDGET = 8500
 # nobody sees. Raised with TOTAL_CTX_BUDGET trimmed to match, so
 # system prompt + context + question + this still stays comfortably under
 # Groq's observed 12,000 TPM ceiling for this tier.
-MAX_RESPONSE_TOKS = 900
+MAX_RESPONSE_TOKS = 1800   # gpt-oss spends part of this on (hidden) reasoning
 
 SYSTEM_PROMPT = """\
 You are a financial analyst with access to official SEC 10-K filings.
@@ -52,6 +51,9 @@ RULES:
    (e.g. 29510 → $29,510 million = $29.5 billion).
 4. If the answer genuinely cannot be found, say so explicitly.
 5. Do not speculate beyond what the documents state.
+6. A source labelled "SEC XBRL structured data" holds the exact figure the company
+   reported to the SEC. When it conflicts with a number you read out of a table,
+   trust the XBRL source.
 
 READING XBRL FINANCIAL TABLES:
 SEC filings use XBRL formatting that creates noisy markdown tables:
@@ -163,11 +165,6 @@ def _build_context(retrieved: List[RetrievedChunk]) -> tuple[str, List[dict]]:
     return "\n\n".join(ctx_parts), citations
 
 
-@lru_cache(maxsize=1)
-def _get_client() -> Groq:
-    return Groq(api_key=settings.groq_api)
-
-
 def _call_generation(user_message: str, retries: int = 2, backoff: float = 1.5) -> str:
     """
     Call Groq for the final answer, retrying transient errors (connection
@@ -178,16 +175,15 @@ def _call_generation(user_message: str, retries: int = 2, backoff: float = 1.5) 
     last_exc: Exception = None
     for attempt in range(retries + 1):
         try:
-            response = _get_client().chat.completions.create(
-                model=settings.generation_model,
-                messages=[
+            return complete(
+                settings.generation_model,
+                [
                     {"role": "system", "content": SYSTEM_PROMPT},
                     {"role": "user",   "content": user_message},
                 ],
-                temperature=0.1,
                 max_tokens=MAX_RESPONSE_TOKS,
+                temperature=0.1,
             )
-            return response.choices[0].message.content.strip()
         except RateLimitError:
             raise
         except (APIConnectionError, APITimeoutError, APIStatusError) as exc:

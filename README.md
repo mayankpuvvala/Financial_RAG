@@ -1,6 +1,14 @@
-# Financial RAG — SEC 10-K Question Answering
+# Financial RAG — Agentic SEC 10-K Question Answering
 
-A Retrieval-Augmented Generation system that answers precise financial questions from real SEC 10-K annual filings. Ask about revenue, R&D spend, net income trends, or segment performance — the system retrieves the exact tables and passages from official filings and cites every number.
+An agentic Retrieval-Augmented Generation system that answers precise financial questions from real SEC 10-K annual filings. Ask about revenue, R&D spend, net income trends, or segment performance — the system plans how to answer, fetches whatever data it's missing, retrieves the exact tables and passages from official filings, and cites every number.
+
+Unlike a fixed retrieve-then-generate pipeline, the agent makes decisions at each step:
+
+- **Plans** — classifies each query (single-company, comparison, trend, or out-of-scope) and decides what to retrieve before running any search.
+- **Uses tools autonomously** — if a question names a company that isn't indexed yet, the agent resolves it against SEC's public filer registry and fetches + indexes its 10-K on the fly, mid-query, no human in the loop.
+- **Verifies and self-heals** — every ticker a query touches is checked against what's actually on disk before answering; missing or stale collections (e.g. built by a since-superseded parser) are silently re-indexed rather than serving stale data.
+- **Self-corrects** — if the generated answer looks like a refusal ("not found in the provided context"), the agent detects that itself and retries once with broadened retrieval before giving up.
+- **Decomposes and synthesizes** — comparison and trend questions are planned into atomic sub-questions, answered independently (in parallel), and merged into one cited answer.
 
 ---
 
@@ -39,24 +47,45 @@ A Retrieval-Augmented Generation system that answers precise financial questions
       │
       ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  ROUTING LAYER  (Groq llama-3.1-8b-instant)                │
-│  Classifier (single_doc / multi_doc / temporal / oos)      │
-│  + Decomposer for multi-doc & temporal queries              │
+│  1. PLAN  (Groq llama-3.1-8b-instant)                       │
+│  Classify → single_doc / multi_doc / temporal / out_of_scope│
+│  Extract companies, years, and metric focus                 │
 └─────────────────────────────────────────────────────────────┘
       │
       ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  RETRIEVAL LAYER                                            │
-│  Qdrant (on-disk) — one collection per ticker+year          │
-│  ├── Dense   BAAI/bge-base-en-v1.5 (768-dim ONNX)          │
+│  2. VERIFY & ACT — agent decides whether it needs more data │
+│  For every company the plan touches:                        │
+│  ├── already indexed & current?  → proceed                  │
+│  ├── unindexed / unrecognized?   → TOOL CALL: resolve via   │
+│  │      SEC registry → download → parse → chunk → embed,    │
+│  │      mid-query, then proceed                             │
+│  └── stale / missing collection? → re-index (self-heal)     │
+└─────────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────────┐
+│  3. RETRIEVE  — Qdrant (on-disk), one collection per        │
+│     ticker+year; multi_doc/temporal decomposed into         │
+│     atomic per-company/year sub-questions first             │
+│  ├── Dense   BAAI/bge-base-en-v1.5 (768-dim ONNX)           │
 │  ├── Sparse  Qdrant/BM25                                    │
 │  └── RRF fusion → cross-encoder rerank → top-3 + parent text│
 └─────────────────────────────────────────────────────────────┘
       │
       ▼
 ┌─────────────────────────────────────────────────────────────┐
-│  GENERATION LAYER  (Groq llama-3.3-70b-versatile)          │
-│  Grounded answer with [N] citations, XBRL-aware prompt      │
+│  4. GENERATE  (Groq llama-3.3-70b-versatile)                │
+│  Grounded sub-answer(s) with [N] citations, XBRL-aware      │
+└─────────────────────────────────────────────────────────────┘
+      │
+      ▼
+┌─────────────────────────────────────────────────────────────┐
+│  5. SELF-CHECK  — agent inspects its own output             │
+│  Looks like a refusal? → retry once, focus dropped,         │
+│  retrieval widened                                          │
+│  Multiple sub-answers (step 3)? → synthesize into one       │
+│  answer                                                     │
 └─────────────────────────────────────────────────────────────┘
       │
       ▼
@@ -141,20 +170,24 @@ print(result.query_type)   # multi_doc | temporal | single_doc | out_of_scope
 
 | Type | Example | Routing |
 |------|---------|---------|
-| `single_doc` | "Apple revenue FY2024?" | Direct retrieval → generation |
-| `multi_doc` | "Compare MSFT vs GOOGL R&D" | Decompose → retrieve each → synthesize |
-| `temporal` | "JPM net income 2023–2025" | Decompose by year → retrieve each → synthesize |
+| `single_doc` | "Apple revenue FY2024?" | Verify/ingest → retrieve → generate → self-check retry |
+| `multi_doc` | "Compare MSFT vs GOOGL R&D" | Verify/ingest each → decompose → retrieve each → generate → synthesize |
+| `temporal` | "JPM net income 2023–2025" | Verify/ingest → decompose by year → retrieve each → generate → synthesize |
 | `out_of_scope` | "Bitcoin price?" | Early exit, no retrieval |
+
+Every one of these — including `single_doc` — goes through the verify/self-heal step first (see below); it's just a no-op when the ticker is already indexed and current.
 
 ---
 
 ## On-demand ingestion (any SEC-listed company)
 
-Mentioning a company outside the bundled 12 (e.g. "Tesla", "NFLX") triggers `ingestion/registry.py` to resolve it against SEC's public ticker registry, then `ingestion/auto_ingest.py` downloads just its latest 10-K and indexes it — reusing the already-warm embedding models rather than reloading them.
+Mentioning a company outside the bundled 12 (e.g. "Tesla", "NFLX") triggers `ingestion/registry.py` to resolve it against SEC's public ticker registry, then `ingestion/auto_ingest.py` downloads just its latest 10-K and indexes it — reusing the already-warm embedding models rather than reloading them. This is the agent's one real "tool call": nothing is pre-fetched, it decides mid-query that it's missing data and goes and gets it.
 
 Try it: `python query.py "What was Netflix's revenue in their latest 10-K?"`
 
 It's a **one-time** cost per company (a few minutes on CPU-only hardware, dominated by embedding), persisted to disk/Qdrant exactly like the bundled 12 — every later question about that company is instant. The chunks from the sections that answer the most common questions (financial statements, MD&A, risk factors, business overview) are embedded and searchable first; everything else finishes indexing in the background so the first answer doesn't wait for the whole filing. A per-ticker lock prevents duplicate work from concurrent requests, and failed lookups are cached for 5 minutes.
+
+The same code path also runs for every ticker already in the bundled 12 on every query that touches it (`routing/resolver.py:classify_and_ensure`) — not to fetch new data, but to verify the collection actually exists and is current, and transparently re-index it if not. A cached-parse collection built by a since-superseded version of `parser.py` self-heals the next time anyone asks about it, instead of silently serving stale data forever.
 
 ---
 
@@ -185,6 +218,31 @@ python -m evaluation.ragas_eval --test-set my_set.json --output scores.json
 ```
 
 Scores faithfulness, answer relevancy, context precision, and context recall (0–1 each) using the same Groq LLM as judge. Bring your own test set as a JSON list of `{"question": ..., "ground_truth": ...}`.
+
+---
+
+## LangGraph agent, verification, structured facts, MCP
+
+`query.ask()` now runs a LangGraph agent (`agent/graph.py`). The original linear pipeline is kept as `ask_baseline()` for A/B measurement.
+
+```
+plan → early-exit | qa | decompose → [answer_sub × N, parallel] → synthesize → caveats
+
+qa:  retrieve → generate → verify ──ok──────────────────────────────→ finalize
+                              ├─ wrong/missing figure → inject SEC XBRL fact → generate → verify
+                              │       (still wrong) ───→ deterministic answer from XBRL
+                              ├─ refusal ──────────────→ broaden retrieval → generate → verify
+                              └─ unsupported figure ───→ strict retry → generate → verify
+```
+
+- **`facts/xbrl.py`** — exact annual figures from SEC's `companyfacts` API (revenue, net income, operating income, R&D, assets, cash, …), taken from the fiscal year's *own* 10-K (not later restatements). Cached under `data/xbrl/`.
+- **`verification/verify.py`** — checks the answer's headline figure against XBRL and every other dollar amount against the retrieved text (or as a sum/difference of stated figures). Each corrective step runs at most once.
+- **`mcp_server.py`** — MCP tools: `search_filings`, `fetch_10k`, `get_xbrl_figure`, `ask_financial_question`, `list_indexed_filings` (`python mcp_server.py`, or `--http --port 8765`).
+- **`llm.py`** — one place for Groq/OpenAI calls (`llm_provider=groq|openai`): retries empty replies from reasoning models and per-minute rate limits, fails fast on daily limits and exhausted billing.
+
+**Measured** (53 questions with SEC-reported ground truth, `python -m evaluation.numeric_eval`; OpenAI `gpt-4.1`): baseline 41/53 (77%), agent 53/53 on the first run and on 3 further runs (a 5th and 6th run, cut short when the OpenAI account ran out of credit, had 3 misses — all quota errors, none wrong figures). The ground truth and the fallback share the same XBRL source, so this shows the pipeline now reliably states the SEC figure, not that every answer is independently audited. On 12 qualitative/early-exit questions (`evaluation.qualitative_eval`) both systems score the same.
+
+Groq's free tier is limited to 8000 tokens/minute per model, roughly one answer a minute with this context size; set `llm_provider=openai` (+ `openai_api_key`) for real traffic.
 
 ---
 
@@ -228,6 +286,9 @@ Financial_RAG/
 - **Parent-child chunking** — small chunks for precise retrieval, full parent section text for LLM context.
 - **Cross-encoder reranking** — a joint (query, chunk) relevance signal, sharper than bi-encoder cosine similarity alone.
 - **"Incorporated by reference" filings** — some bank holding companies (e.g. Wells Fargo) file a slim 10-K that points to a separate "Annual Report to Shareholders" exhibit (EX-13) instead of including Risk Factors/MD&A/Financials inline. The downloader merges EX-13 in when present; the parser boundary-detects each embedded document separately (concatenating raw HTML into one tree causes `lxml` to drop everything after the first `</html>`, and each document needs its own independent Item-ordering pass).
+- **Verify-on-every-query, not just on ingest** — the classifier's system prompt tells the model the bundled 12 are "already indexed and ready," but that's a static assumption, not a live fact (a collection can be deleted, corrupted, or stale from an old parser version). Rather than trusting the prompt, every ticker a query touches — bundled or auto-ingested — is checked against what's actually on disk before answering, and silently re-indexed if it's missing or stale. Costs one cheap collection-existence check in the common case.
+- **Bounded self-correction, not a blind retry** — a refused answer ("not explicitly stated in the provided context") triggers exactly one retry with the metric focus dropped and retrieval widened, keyed off a regex over the model's own refusal phrasing. Capped at one retry so a genuinely out-of-scope query still fails fast instead of doubling LLM cost on every miss.
+- **Deterministic decomposition for temporal queries** — trend questions ("how did X change from 2023 to 2025") skip the LLM decomposer entirely and build one sub-question per year directly from the classifier's `focus` field. The LLM decomposer is tuned for multi-company comparisons and was observed misapplying its "describe the business" special case to single-company metric questions, or under-delivering sub-questions for the requested year span.
 
 ---
 

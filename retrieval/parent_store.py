@@ -78,6 +78,18 @@ class ParentStore:
         self._load_all()
         return self._docs.get(doc_id)
 
+    def get_doc_by_ticker_year(self, ticker: str, fiscal_year: int) -> Optional[ParsedDocument]:
+        """
+        Look up a document without already knowing its doc_id — needed by the
+        full-document fallback scan, which can trigger when retrieval found
+        zero chunks at all (so there's no Chunk.doc_id to key off of).
+        """
+        self._load_all()
+        return next(
+            (d for d in self._docs.values() if d.ticker == ticker and d.fiscal_year == fiscal_year),
+            None,
+        )
+
     def reload(self) -> None:
         """Force a fresh load — call after adding new parsed files."""
         self._docs.clear()
