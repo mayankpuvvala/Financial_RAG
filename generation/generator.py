@@ -14,7 +14,7 @@ import tiktoken
 from loguru import logger
 
 from config import settings
-from llm import complete, RateLimitError, APIConnectionError, APITimeoutError, APIStatusError
+from llm import complete, RateLimitError, TransientErrors
 from models import QueryResult, RetrievedChunk
 from retrieval.reranker import _compress_xbrl
 
@@ -31,7 +31,10 @@ MAX_CTX_TOKS = 1500   # per source — Groq free-tier 100K TPD budget; raised fr
 # tokens against a 12,000 TPM limit, a hard 413 rather than a retryable
 # blip). Kept comfortably under that limit to leave room for the system
 # prompt (~400-500 tok), the question, and MAX_RESPONSE_TOKS below.
-TOTAL_CTX_BUDGET = 8500
+# Groq's free tier rejects any single request over 8000 tokens/minute (HTTP 413), and
+# max_tokens counts toward that — so the context must leave room for the system
+# prompt, the question and MAX_RESPONSE_TOKS. OpenAI has no such ceiling here.
+TOTAL_CTX_BUDGET = 8500 if settings.llm_provider == "openai" else 4500
 
 # Detail-rich answers (e.g. summarizing multi-paragraph litigation/risk
 # disclosures) were visibly hitting the old 512-token cap and cutting off
@@ -186,7 +189,7 @@ def _call_generation(user_message: str, retries: int = 2, backoff: float = 1.5) 
             )
         except RateLimitError:
             raise
-        except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
+        except TransientErrors as exc:
             last_exc = exc
             # 413 (request too large for the model's TPM limit) fails
             # identically on every retry — it's a fixed property of this
@@ -245,7 +248,7 @@ def generate_answer(
             chunks_used=retrieved,
             query_type=query_type,
         )
-    except (APIConnectionError, APITimeoutError, APIStatusError) as exc:
+    except TransientErrors as exc:
         if getattr(exc, "status_code", None) == 413:
             logger.error(f"Groq request too large for generation: {exc}")
             return QueryResult(

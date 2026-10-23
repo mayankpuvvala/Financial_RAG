@@ -222,6 +222,8 @@ def build_qa_graph():
 
 class AgentState(TypedDict, total=False):
     query:          str
+    tickers:        Optional[List[str]]    # optional caller filters (override the classifier)
+    years:          Optional[List[int]]
     classification: ClassifiedQuery
     sub_questions:  List[Dict]
     sub_results:    Annotated[list, operator.add]
@@ -283,6 +285,15 @@ def _early_result(query: str, c: ClassifiedQuery) -> Optional[QueryResult]:
 
 def _plan_node(state: AgentState) -> dict:
     classification = classify_and_ensure(state["query"])
+
+    # Caller-supplied filters (the chat UI's company/year chips) win over what
+    # the classifier inferred, exactly as the chat endpoint always intended.
+    if state.get("tickers"):
+        classification.tickers = [t.upper() for t in state["tickers"]]
+        if classification.query_type == "out_of_scope":   # a chosen company is, by definition, in scope
+            classification.query_type = "multi_doc" if len(classification.tickers) > 1 else "single_doc"
+    if state.get("years"):
+        classification.years = list(state["years"])
     logger.info(
         f"Plan: {classification.query_type} | {classification.tickers} | "
         f"{classification.years} | focus={classification.focus}"
@@ -322,7 +333,11 @@ def _decompose_node(state: AgentState) -> dict:
     # deterministic (the LLM decomposer misapplies its "describe the
     # business" special case to single-company metric questions).
     if c.query_type == "temporal" and len(c.tickers) == 1 and c.years:
-        subs = decompose_temporal(c.tickers[0], c.years, c.focus)
+        # "from 2023 to 2025" is often extracted as just the endpoints; a trend
+        # covers every year in between.
+        ys = sorted(set(c.years))
+        years = list(range(ys[0], ys[-1] + 1)) if len(ys) > 1 else ys
+        subs = decompose_temporal(c.tickers[0], years, c.focus)
     else:
         subs = decompose_query(state["query"], c.tickers, c.years)
     logger.info(f"Decomposed into {len(subs)} sub-question(s)")
@@ -409,11 +424,13 @@ def build_main_graph():
     return g.compile()
 
 
-def run_agent(query: str) -> QueryResult:
+def run_agent(query: str, tickers: Optional[List[str]] = None, years: Optional[List[int]] = None) -> QueryResult:
     global _main_graph
     if _main_graph is None:
         with _build_lock:
             if _main_graph is None:
                 _main_graph = build_main_graph()
-    out = _main_graph.invoke({"query": query}, config={"max_concurrency": MAX_PARALLEL})
+    out = _main_graph.invoke(
+        {"query": query, "tickers": tickers, "years": years}, config={"max_concurrency": MAX_PARALLEL},
+    )
     return out["result"]

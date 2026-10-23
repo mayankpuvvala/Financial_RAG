@@ -335,6 +335,7 @@ Financial_RAG/
 ## Known limits
 
 - **Throughput on Groq's free tier** — ~1 answer/minute (8,000 TPM per model). Use `llm_provider=openai` or a paid tier for concurrent users.
+- **Smaller context on Groq** — a single Groq request must stay under 8,000 tokens, so the answer sees ~4,500 tokens of source text there versus ~8,500 with OpenAI. Very long comparisons can be less detailed on the free tier.
 - **Verification covers dollar amounts** — not percentages, ratios or qualitative claims. XBRL covers headline metrics only; other questions rely on retrieval quality.
 - **Metric definitions** — "net income" is the figure attributable to the company; "revenue" for banks is net revenue. Some filers don't report every metric (e.g. banks have no operating income or R&D).
 - **Chat endpoints are unauthenticated** — protect them before exposing a deployment publicly.

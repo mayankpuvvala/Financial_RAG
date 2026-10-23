@@ -32,8 +32,13 @@ RateLimitError     = (groq.RateLimitError,     openai.RateLimitError)
 APIConnectionError = (groq.APIConnectionError, openai.APIConnectionError)
 APITimeoutError    = (groq.APITimeoutError,    openai.APITimeoutError)
 APIStatusError     = (groq.APIStatusError,     openai.APIStatusError)
+# One FLAT tuple for `except`: Python 3 rejects a tuple that contains tuples.
+TransientErrors    = APIConnectionError + APITimeoutError + APIStatusError
 
-MAX_TOKEN_CEILING = 6000
+# An empty-reply retry doubles max_tokens. On Groq's free tier a request
+# (prompt + max_tokens) must stay under the 8000 tokens/minute limit or it is
+# rejected outright with a 413, so cap the budget there.
+MAX_TOKEN_CEILING = 6000 if settings.llm_provider == "openai" else 2000
 MAX_RATE_LIMIT_RETRIES = 3
 MAX_RATE_LIMIT_WAIT = 30.0
 

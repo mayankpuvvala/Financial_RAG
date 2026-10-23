@@ -105,3 +105,14 @@ def test_rate_limit_gives_up_after_retries(monkeypatch):
     with pytest.raises(RateLimitError):
         llm.complete("openai/gpt-oss-20b", [], max_tokens=100)
     assert len(fake.calls) == llm.MAX_RATE_LIMIT_RETRIES + 1
+
+
+def test_transient_errors_is_a_flat_tuple_of_exception_classes():
+    # A tuple nested in the `except` tuple raises TypeError in Python 3, which
+    # surfaced only when a real API error occurred (HTTP 500 instead of a message).
+    assert all(isinstance(e, type) and issubclass(e, BaseException) for e in llm.TransientErrors)
+    try:
+        raise llm.APIStatusError[0]("x", response=__import__("httpx").Response(
+            413, request=__import__("httpx").Request("POST", "https://x")), body=None)
+    except llm.TransientErrors:
+        pass

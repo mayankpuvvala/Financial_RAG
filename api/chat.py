@@ -97,15 +97,9 @@ except Exception:
 
 def _run_pipeline(question: str, tickers=None, years=None) -> QueryResult:
     """Run the RAG pipeline with optional caller-supplied ticker/year filters."""
-    if tickers or years:
-        cls = classify_and_ensure(question)
-        t = tickers or cls.tickers
-        y = years   or cls.years
-        if cls.query_type in ("multi_doc", "temporal"):
-            return synthesize(question, t, y, cls.query_type, focus=cls.focus)
-        retrieved = retrieve(question, t, y, focus=cls.focus)
-        return generate_answer(question, retrieved, cls.query_type)
-    return ask(question)
+    # Filtered and unfiltered questions both go through the LangGraph agent, so
+    # a company/year chip no longer bypasses verification and the XBRL facts.
+    return ask(question, tickers=tickers, years=years)
 
 
 # ── Schemas ───────────────────────────────────────────────────────────────────

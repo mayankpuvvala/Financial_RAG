@@ -190,10 +190,11 @@ def _print_result(result: QueryResult) -> None:
     print("=" * 60 + "\n")
 
 
-def ask(query: str) -> QueryResult:
-    """Answer a question with the LangGraph agent (agent/graph.py)."""
+def ask(query: str, tickers=None, years=None) -> QueryResult:
+    """Answer a question with the LangGraph agent (agent/graph.py). Optional
+    tickers/years override what the classifier infers (the chat UI's filters)."""
     from agent.graph import run_agent
-    return run_agent(query)
+    return run_agent(query, tickers=tickers, years=years)
 
 
 if __name__ == "__main__":
