@@ -21,17 +21,26 @@ from functools import lru_cache
 from typing import Optional
 
 import groq
-import openai
 from loguru import logger
 
 from config import settings
 
-# Exception classes from either SDK, so callers can catch provider failures
-# without caring which provider is configured (an `except` accepts a tuple).
-RateLimitError     = (groq.RateLimitError,     openai.RateLimitError)
-APIConnectionError = (groq.APIConnectionError, openai.APIConnectionError)
-APITimeoutError    = (groq.APITimeoutError,    openai.APITimeoutError)
-APIStatusError     = (groq.APIStatusError,     openai.APIStatusError)
+# Exception classes for the configured provider(s), so callers can catch API
+# failures without caring which one is active (an `except` accepts a tuple).
+# The OpenAI SDK is a heavy import and only needed when it is the provider, so
+# it is not loaded at all on the default Groq setup (matters on small hosts).
+def _error_classes(name: str) -> tuple:
+    classes = [getattr(groq, name)]
+    if settings.llm_provider == "openai":
+        import openai
+        classes.append(getattr(openai, name))
+    return tuple(classes)
+
+
+RateLimitError     = _error_classes("RateLimitError")
+APIConnectionError = _error_classes("APIConnectionError")
+APITimeoutError    = _error_classes("APITimeoutError")
+APIStatusError     = _error_classes("APIStatusError")
 # One FLAT tuple for `except`: Python 3 rejects a tuple that contains tuples.
 TransientErrors    = APIConnectionError + APITimeoutError + APIStatusError
 
@@ -77,6 +86,7 @@ def _is_daily_limit(message: str) -> bool:
 def get_client():
     """Both SDKs expose the same client.chat.completions.create(...)."""
     if settings.llm_provider == "openai":
+        import openai
         return openai.OpenAI(api_key=settings.openai_api_key)
     return groq.Groq(api_key=settings.groq_api)
 
