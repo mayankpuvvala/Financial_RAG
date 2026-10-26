@@ -96,3 +96,4 @@ scratch/
 .mypy_cache/
 .ruff_cache/
 .hypothesis/
+prod_sessions_snapshot*.json
